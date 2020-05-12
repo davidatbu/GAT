@@ -2,6 +2,7 @@ import csv
 import json
 import logging
 import pickle as pkl
+from itertools import chain
 from pathlib import Path
 from typing import Callable
 from typing import Dict
@@ -15,6 +16,7 @@ from typing import Tuple
 import torch
 from allennlp.data.tokenizers.word_splitter import SpacyWordSplitter
 from sent2graph import Edge
+from sent2graph import Node
 from sent2graph import SentenceToGraph
 from sent2graph import SRLSentenceToGraph
 from tqdm import tqdm
@@ -42,12 +44,32 @@ class TextSource(Iterable[Tuple[str, str]], Sized):
             yield self[i]
 
 
+class ConcatTextSource(TextSource):
+    def __init__(self, arg: TextSource, *args: TextSource):
+        self.lstxt_src = (arg,) + args
+        self.lens = list(map(len, self.lstxt_src))
+
+    def __getitem__(self, idx: int) -> Tuple[str, str]:
+        cur_txt_src_i = 0
+        cur_len = len(self.lstxt_src[cur_txt_src_i])
+        while idx >= cur_len:
+            idx -= cur_len
+            cur_txt_src_i += 1
+        return self.lstxt_src[cur_txt_src_i][idx]
+
+    def __len__(self) -> int:
+        return sum(self.lens)
+
+    def __repr__(self) -> str:
+        return "Cat" + "-" + "-".join(str(txt_src) for txt_src in self.lstxt_src)
+
+
 class CsvTextSource(TextSource):
     def __init__(
         self, fp: Path, txt_col: str, lbl_col: str, allow_unlablled: bool
     ) -> None:
 
-        self.fp_path = fp.name
+        self.fp_stem = fp.stem
 
         with fp.open() as f:
             reader = csv.reader(f)
@@ -62,7 +84,7 @@ class CsvTextSource(TextSource):
             self.rows = [(row[txt_col_i], row[lbl_col_i]) for row in reader]
 
     def __repr__(self) -> str:
-        return f"CsvTextSource_{self.fp_path}"
+        return f"Csv_{self.fp_stem}"
 
     def __getitem__(self, idx: int) -> Tuple[str, str]:
         return self.rows[idx]
@@ -145,7 +167,7 @@ class Cacheable:
             + "-"
             + "-".join(
                 [
-                    f"{attr}_{str(getattr(self, attr))}"
+                    f"{attr[:4]}_{str(getattr(self, attr))}"
                     for attr in self.lscache_uniquer_attr
                 ]
             )
@@ -224,6 +246,9 @@ class VocabAndEmb(Cacheable):
     def word2id(self, word: str) -> int:
         return self._word2id.get(word, self._unk_id)
 
+    def lbl2id(self, lbl: str) -> int:
+        return self._lbl2id[lbl]
+
     def tokenize_before_unk(self, sent: str) -> Tuple[str, ...]:
         if self.lower_case:
             sent = sent.lower()
@@ -232,7 +257,7 @@ class VocabAndEmb(Cacheable):
 
 
 class SentenceGraphDataset(
-    Iterable[Tuple[torch.FloatTensor, torch.IntTensor]], Sized, Cacheable
+    Iterable[Tuple[List[Edge], torch.IntTensor]], Sized, Cacheable
 ):
     def __init__(
         self,
@@ -251,13 +276,17 @@ class SentenceGraphDataset(
 
         Cacheable.__init__(self, cache_dir=cache_dir, ignore_cache=ignore_cache)
 
-        self.lslsedge_index: List[List[Edge]]  # just a type annotation
+        self._lslsedge_index: List[List[Edge]]  # just a type annotation
         if undirected_edges:
-            self.lslsedge_index = self.batch_to_undirected(self.lslsedge_index)
+            self._lslsedge_index = self.batch_to_undirected(self._lslsedge_index)
 
     @property
     def cached_attrs(self) -> List[Tuple[Literal["torch", "json", "pkl"], str]]:
-        return [("pkl", "lslsedge_index")]
+        return [
+            ("pkl", "_lslshead_node"),
+            ("pkl", "_lslsedge_index"),
+            ("torch", "_tclbl"),
+        ]
 
     @property
     def lscache_uniquer_attr(self) -> List[str]:
@@ -269,8 +298,10 @@ class SentenceGraphDataset(
 
     def process(self) -> None:
         logger.info("Getting sentence graphs ...")
+        lslshead_node: List[List[Node]] = []
         lslsedge_index: List[List[Edge]] = []
-        for sent, lbl in tqdm(self.txt_src, desc="Doing SRL"):
+        lssent, lslbl = list(zip(*self.txt_src))
+        for sent in tqdm(lssent, desc="Doing SRL"):
             lsword = self.vocab_and_emb.tokenize_before_unk(sent)
             lshead_node, lsedge_index, lsedge_type = self.sent2graph.to_graph(lsword)
             # We get indices relative to sentence beginngig, convert these to global ids
@@ -280,17 +311,23 @@ class SentenceGraphDataset(
                 (global_word_ids[edge_x], global_word_ids[edge_y])
                 for edge_x, edge_y in lsedge_index
             ]
+
+            lslshead_node.append(global_lshead_node)
             lslsedge_index.append(global_lsedge_index)
 
-        self.lslsedge_index = lslsedge_index
+        self._lslshead_node = lslshead_node
+        self._lslsedge_index = lslsedge_index
+        self._tclbl = torch.tensor(
+            [self.vocab_and_emb.lbl2id(lbl) for lbl in lslbl], dtype=torch.int
+        )
 
     def __len__(self) -> int:
-        return len(self.lslsedge_index)
+        return len(self._lslsedge_index)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.FloatTensor, torch.IntTensor]:
+    def __getitem__(self, idx: int) -> Tuple[List[Edge], torch.IntTensor]:
         pass
 
-    def __iter__(self) -> Iterator[Tuple[torch.FloatTensor, torch.IntTensor]]:
+    def __iter__(self) -> Iterator[Tuple[List[Edge], torch.IntTensor]]:
         for i in range(len(self)):
             yield self[i]
 
@@ -315,26 +352,32 @@ def main() -> None:
         "/projectnb/llamagrp/davidat/projects/graphs/data/ready/gv_2018_1160_examples/raw"
     )
 
-    train_src = CsvTextSource(
-        fp=(dataset_dir / "train.csv"),
-        txt_col="news_title",
-        lbl_col="Q3 Theme1",
-        allow_unlablled=False,
-    )
+    splits = ["train", "val"]
+    lstxt_src = [
+        CsvTextSource(
+            fp=(dataset_dir / f"{split}.csv"),
+            txt_col="news_title",
+            lbl_col="Q3 Theme1",
+            allow_unlablled=False,
+        )
+        for split in splits
+    ]
 
+    cat_txt_src = ConcatTextSource(*lstxt_src)
     vocab_and_emb = VocabAndEmb(
-        txt_src=train_src,
+        txt_src=cat_txt_src,
         cache_dir=dataset_dir,
         embedder=GloveWordToVec(),
-        unk_thres=2,
+        unk_thres=1,
     )
 
     sent_dataset = SentenceGraphDataset(
         cache_dir=dataset_dir,
-        txt_src=train_src,
+        txt_src=cat_txt_src,
         sent2graph=SRLSentenceToGraph(),
         vocab_and_emb=vocab_and_emb,
     )
+    breakpoint()
 
 
 if __name__ == "__main__":

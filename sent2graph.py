@@ -164,7 +164,7 @@ class SRLSentenceToGraph(SentenceToGraph):
         # self.allen = FakeAllen()
 
     def __repr__(self) -> str:
-        return "BERT_SRL_SEN2GRAPH"
+        return "BSrl"
 
     def to_graph(
         self, lsword: Tuple[str, ...]
