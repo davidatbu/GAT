@@ -1,7 +1,5 @@
 import logging
-import pickle as pkl
 from argparse import ArgumentParser
-from pathlib import Path
 from pprint import pformat
 from typing import Any
 from typing import Dict
@@ -11,8 +9,6 @@ from typing import Set
 from typing import Tuple
 from typing import TypeVar
 
-import matplotlib.pyplot as plt
-import networkx as nx  # type: ignore
 from allennlp.predictors.predictor import Predictor
 
 GLOBAL_DEBUG_FLAG = False
@@ -66,49 +62,22 @@ Slice = Tuple[int, int]
 
 
 class SentenceToGraph:
-    def __init__(self, cache_dir: Path, ignore_cache: bool) -> None:
-        self.cache_fp = cache_dir / (str(self) + ".pkl")
-        self.cache: Dict[Tuple[str, ...], Tuple[List[int], List[Edge], List[int]]] = {}
-
-        if not ignore_cache:
-
-            if not self.cache_fp.exists():
-                logger.warning(
-                    f"{str(self.cache_fp)} does not exist, but asked to read from cache. Ignoring."
-                )
-            else:
-                with self.cache_fp.open("rb") as fb:
-                    pkl_content = pkl.load(fb)
-                    assert isinstance(pkl_content, dict)
-                    self.cache = pkl_content
+    def __init__(self) -> None:
+        pass
 
     def __repr__(self) -> str:
         raise NotImplementedError()
-
-    def to_graph(
-        self, lsword: Tuple[str, ...]
-    ) -> Tuple[List[int], List[Edge], List[int]]:
-        if lsword in self.cache:
-            return self.cache[lsword]
-        else:
-            graph = self._to_graph(lsword)
-            self.cache[lsword] = graph
-            return self.cache[lsword]
 
     def batch_to_graph(
         self, lslsword: List[Tuple[str, ...]]
     ) -> List[Tuple[List[int], List[Edge], List[int]]]:
         return [self.to_graph(lsword) for lsword in lslsword]
 
-    def _to_graph(
+    def to_graph(
         self, lsword: Tuple[str, ...]
     ) -> Tuple[List[int], List[Edge], List[int]]:
 
         raise NotImplementedError()
-
-    def save_cache(self) -> None:
-        with self.cache_fp.open("wb") as fb:
-            pkl.dump(self.cache, fb)
 
 
 _id2role: List[str] = [
@@ -117,6 +86,8 @@ _id2role: List[str] = [
     "ARG2",
     "ARG3",
     "ARG4",
+    "ARG5",
+    "ARGA",
     "ARGM-ADJ",
     "ARGM-ADV",
     "ARGM-CAU",
@@ -127,18 +98,56 @@ _id2role: List[str] = [
     "ARGM-EXT",
     "ARGM-GOL",
     "ARGM-LOC",
+    "ARGM-LVB",
     "ARGM-MNR",
     "ARGM-MOD",
     "ARGM-NEG",
+    "ARGM-PNC",
     "ARGM-PRD",
     "ARGM-PRP",
     "ARGM-PRR",
+    "ARGM-PRX",
     "ARGM-REC",
     "ARGM-TMP",
-    "ARGA",
-    "LINK-PRO",
-    "LINK-PSV",
-    "LINK-SLC",
+    "C-ARG0",
+    "C-ARG1",
+    "C-ARG2",
+    "C-ARG3",
+    "C-ARG4",
+    "C-ARGM-ADJ",
+    "C-ARGM-ADV",
+    "C-ARGM-CAU",
+    "C-ARGM-COM",
+    "C-ARGM-DIR",
+    "C-ARGM-DIS",
+    "C-ARGM-DSP",
+    "C-ARGM-EXT",
+    "C-ARGM-LOC",
+    "C-ARGM-MNR",
+    "C-ARGM-MOD",
+    "C-ARGM-NEG",
+    "C-ARGM-PRP",
+    "C-ARGM-TMP",
+    "R-ARG0",
+    "R-ARG1",
+    "R-ARG2",
+    "R-ARG3",
+    "R-ARG4",
+    "R-ARG5",
+    "R-ARGM-ADV",
+    "R-ARGM-CAU",
+    "R-ARGM-COM",
+    "R-ARGM-DIR",
+    "R-ARGM-EXT",
+    "R-ARGM-GOL",
+    "R-ARGM-LOC",
+    "R-ARGM-MNR",
+    "R-ARGM-MOD",
+    "R-ARGM-PNC",
+    "R-ARGM-PRD",
+    "R-ARGM-PRP",
+    "R-ARGM-TMP",
+    "V",
 ]
 _role2id: Dict[str, int] = {role: i for i, role in enumerate(_id2role)}
 
@@ -147,36 +156,20 @@ class SRLSentenceToGraph(SentenceToGraph):
     _id2role = _id2role
     _role2id = _role2id
 
-    def __init__(
-        self, cache_dir: Path, ignore_cache: bool, use_cache_only: bool
-    ) -> None:
-        assert not (ignore_cache and use_cache_only)
-        self.use_cache_only = use_cache_only
+    def __init__(self) -> None:
+        self.allen = Predictor.from_path(
+            "/projectnb/llamagrp/davidat/pretrained_models/allenlp/bert-base-srl-2019.06.17.tar.gz"
+        )
 
-        super().__init__(cache_dir, ignore_cache)
-        self.allen: Optional[Predictor] = None
-        if not use_cache_only:
-            if GLOBAL_DEBUG_FLAG:
-                self.allen = FakeAllen()
-            else:
-                self.allen = Predictor.from_path(
-                    "/projectnb/llamagrp/davidat/pretrained_models/allenlp/bert-base-srl-2019.06.17.tar.gz"
-                )
-
-            # self.allen = FakeAllen()
+        # self.allen = FakeAllen()
 
     def __repr__(self) -> str:
         return "BERT_SRL_SEN2GRAPH"
 
-    def _to_graph(
+    def to_graph(
         self, lsword: Tuple[str, ...]
     ) -> Tuple[List[int], List[Edge], List[int]]:
-        if self.use_cache_only:
-            raise Exception(
-                f"self.use_cache_only=True, but {lsword[:10]}... not found in cache"
-            )
 
-        assert self.allen is not None
         srl_resp = self.allen.predict(" ".join(lsword))
         logger.debug(pformat(srl_resp, indent=2))
         # Sample response
@@ -270,6 +263,8 @@ class SRLSentenceToGraph(SentenceToGraph):
         return max(all_slice_end_points) - min(all_slice_end_points)
 
     def draw_graph(self, lsword: Tuple[str, ...]) -> None:
+        import matplotlib.pyplot as plt
+        import networkx as nx  # type: ignore
 
         lshead_node, lsedge_index, lsrole_id = self.to_graph(lsword)
         lsnode = list(range(len(lsword)))
@@ -300,12 +295,7 @@ class SRLSentenceToGraph(SentenceToGraph):
 
 
 def _test() -> None:
-    dataset_dir = Path(
-        "/projectnb/llamagrp/davidat/projects/graphs/data/ready/gv_2018_1160_examples"
-    )
-    sent2graph = SRLSentenceToGraph(
-        cache_dir=dataset_dir, ignore_cache=False, use_cache_only=False
-    )
+    sent2graph = SRLSentenceToGraph()
     for lsword in [["do", "not", "love", "the", "world"]]:
         sent2graph.draw_graph(tuple(lsword))
 
@@ -321,5 +311,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
     main()
