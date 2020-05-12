@@ -257,7 +257,7 @@ class VocabAndEmb(Cacheable):
 
 
 class SentenceGraphDataset(
-    Iterable[Tuple[List[Edge], torch.IntTensor]], Sized, Cacheable
+    Iterable[Tuple[List[Node], List[Edge], torch.Tensor]], Sized, Cacheable
 ):
     def __init__(
         self,
@@ -324,10 +324,12 @@ class SentenceGraphDataset(
     def __len__(self) -> int:
         return len(self._lslsedge_index)
 
-    def __getitem__(self, idx: int) -> Tuple[List[Edge], torch.IntTensor]:
-        pass
+    def __getitem__(self, idx: int) -> Tuple[List[Node], List[Edge], torch.Tensor]:
+        if idx > len(self):
+            raise IndexError(f"{idx} is >= {len(self)}")
+        return (self._lslshead_node[idx], self._lslsedge_index[idx], self._tclbl[idx])
 
-    def __iter__(self) -> Iterator[Tuple[List[Edge], torch.IntTensor]]:
+    def __iter__(self) -> Iterator[Tuple[List[Node], List[Edge], torch.Tensor]]:
         for i in range(len(self)):
             yield self[i]
 
