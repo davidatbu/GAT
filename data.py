@@ -2,7 +2,6 @@ import csv
 import json
 import logging
 import pickle as pkl
-from itertools import chain
 from pathlib import Path
 from typing import Callable
 from typing import Dict
@@ -15,16 +14,18 @@ from typing import Tuple
 
 import torch
 from allennlp.data.tokenizers.word_splitter import SpacyWordSplitter
-from sent2graph import Edge
-from sent2graph import Node
-from sent2graph import SentenceToGraph
-from sent2graph import SRLSentenceToGraph
+from torch.utils.data import DataLoader
+from torch.utils.data import Dataset
 from tqdm import tqdm
 from typing_extensions import Counter
 from typing_extensions import Literal
 
 from embeddings import WordToVec
 from glove_embeddings import GloveWordToVec
+from sent2graph import Edge
+from sent2graph import Node
+from sent2graph import SentenceToGraph
+from sent2graph import SRLSentenceToGraph
 
 logger = logging.getLogger("__main__")
 
@@ -257,7 +258,10 @@ class VocabAndEmb(Cacheable):
 
 
 class SentenceGraphDataset(
-    Iterable[Tuple[List[Node], List[Edge], torch.Tensor]], Sized, Cacheable
+    Iterable[Tuple[List[Node], torch.Tensor, List[Tuple[Node, int]]]],
+    Sized,
+    Cacheable,
+    Dataset,  # type: ignore
 ):
     def __init__(
         self,
@@ -283,9 +287,10 @@ class SentenceGraphDataset(
     @property
     def cached_attrs(self) -> List[Tuple[Literal["torch", "json", "pkl"], str]]:
         return [
-            ("pkl", "_lslshead_node"),
+            ("pkl", "_lslsglobal_node"),
             ("pkl", "_lslsedge_index"),
-            ("torch", "_tclbl"),
+            ("pkl", "_lslshead_node"),
+            ("pkl", "_lslbl"),
         ]
 
     @property
@@ -298,6 +303,7 @@ class SentenceGraphDataset(
 
     def process(self) -> None:
         logger.info("Getting sentence graphs ...")
+        lslsglobal_node: List[List[Node]] = []
         lslshead_node: List[List[Node]] = []
         lslsedge_index: List[List[Edge]] = []
         lssent, lslbl = list(zip(*self.txt_src))
@@ -305,31 +311,43 @@ class SentenceGraphDataset(
             lsword = self.vocab_and_emb.tokenize_before_unk(sent)
             lshead_node, lsedge_index, lsedge_type = self.sent2graph.to_graph(lsword)
             # We get indices relative to sentence beginngig, convert these to global ids
-            global_word_ids = [self.vocab_and_emb.word2id(word) for word in lsword]
-            global_lshead_node = [global_word_ids[id_] for id_ in lshead_node]  # noqa:
-            global_lsedge_index = [  # noqa:
-                (global_word_ids[edge_x], global_word_ids[edge_y])
-                for edge_x, edge_y in lsedge_index
-            ]
+            lsglobal_node = [self.vocab_and_emb.word2id(word) for word in lsword]
 
-            lslshead_node.append(global_lshead_node)
-            lslsedge_index.append(global_lsedge_index)
+            lslsglobal_node.append(lsglobal_node)
+            lslshead_node.append(lshead_node)
+            lslsedge_index.append(lsedge_index)
 
+        self._lslsglobal_node = lslsglobal_node
         self._lslshead_node = lslshead_node
         self._lslsedge_index = lslsedge_index
-        self._tclbl = torch.tensor(
-            [self.vocab_and_emb.lbl2id(lbl) for lbl in lslbl], dtype=torch.int
-        )
+        self._lslbl = [self.vocab_and_emb.lbl2id(lbl) for lbl in lslbl]
 
     def __len__(self) -> int:
         return len(self._lslsedge_index)
 
-    def __getitem__(self, idx: int) -> Tuple[List[Node], List[Edge], torch.Tensor]:
+    def __getitem__(
+        self, idx: int
+    ) -> Tuple[List[Node], torch.Tensor, List[Tuple[Node, int]]]:
         if idx > len(self):
             raise IndexError(f"{idx} is >= {len(self)}")
-        return (self._lslshead_node[idx], self._lslsedge_index[idx], self._tclbl[idx])
+        lsglobal_node = self._lslsglobal_node[idx]
+        lshead_node = self._lslshead_node[idx]
+        lsedge_index = self._lslsedge_index[idx]
+        lbl = self._lslbl[idx]
 
-    def __iter__(self) -> Iterator[Tuple[List[Node], List[Edge], torch.Tensor]]:
+        # Make a non sparse adjacency matrix
+        N = len(lsglobal_node)
+        tcadj: torch.Tensor = torch.zeros(N, N, dtype=torch.float)
+        tcadj[list(zip(*lsedge_index))] = 1
+
+        # Generate list of labelled nodes
+        lslbled_node = [(node, lbl) for node in lshead_node]
+
+        return lsglobal_node, tcadj, lslbled_node
+
+    def __iter__(
+        self,
+    ) -> Iterator[Tuple[List[Node], torch.Tensor, List[Tuple[Node, int]]]]:
         for i in range(len(self)):
             yield self[i]
 
@@ -347,6 +365,69 @@ class SentenceGraphDataset(
     @classmethod
     def batch_to_undirected(cls, lslsedge_index: List[List[Edge]]) -> List[List[Edge]]:
         return [cls.to_undirected(lsedge_index) for lsedge_index in lslsedge_index]
+
+    @staticmethod
+    def collate_fn(
+        batch: List[Tuple[List[Node], torch.Tensor, List[Tuple[Node, int]]]]
+    ) -> Tuple[List[Node], torch.Tensor, List[Tuple[Node, int]]]:
+
+        (batch_lsglobal_node, batch_tcadj, batch_lslbled_node,) = zip(*batch)
+
+        lsglobal_node: List[Node] = []
+        lslbled_node: List[Tuple[Node, int]] = []
+        counter = 0
+        for one_lsglobal_node, one_lslbled_node in zip(
+            batch_lsglobal_node, batch_lslbled_node
+        ):
+            lsglobal_node.extend(one_lsglobal_node)
+            lslbled_node.extend(
+                [(node + counter, lbl) for node, lbl in one_lslbled_node]
+            )
+            counter += len(one_lsglobal_node)
+
+        tcadj = torch.block_diag(*batch_tcadj)  # type: ignore
+
+        return lsglobal_node, tcadj, lslbled_node
+
+    def draw_networkx_graph(
+        self,
+        lsglobal_node: List[Node],
+        tcadj: torch.Tensor,
+        lslbled_node: List[Tuple[Node, int]],
+    ) -> None:
+        import matplotlib.pyplot as plt
+        import networkx as nx  # type: ignore
+
+        lsedge_index = list(map(tuple, torch.nonzero(tcadj, as_tuple=False).tolist()))
+
+        # Create nicer names
+        node2word = {
+            i: self.vocab_and_emb._id2word[word_id]
+            for i, word_id in enumerate(lsglobal_node)
+        }
+        lsnode = list(range(len(lsglobal_node)))
+
+        lshead_node, lslbl = zip(*lslbled_node)
+        lsnode_color: List[str] = [
+            "b" if node in lshead_node else "y" for node in lsnode
+        ]
+
+        # Append node label to nx "node labels"
+        for head_node, lbl in lslbled_node:
+            node2word[head_node] += f"|label={lbl}"
+
+        G = nx.Graph()
+        G.add_nodes_from(lsnode)
+        G.add_edges_from(lsedge_index)
+
+        pos = nx.planar_layout(G)
+        nx.draw(
+            G,
+            pos=pos,
+            labels=node2word,
+            node_color=lsnode_color,  # node_size=1000, # size=10000,
+        )
+        plt.show()
 
 
 def main() -> None:
@@ -373,13 +454,33 @@ def main() -> None:
         unk_thres=1,
     )
 
-    sent_dataset = SentenceGraphDataset(
-        cache_dir=dataset_dir,
-        txt_src=cat_txt_src,
-        sent2graph=SRLSentenceToGraph(),
-        vocab_and_emb=vocab_and_emb,
+    split_datasets = [
+        SentenceGraphDataset(
+            cache_dir=dataset_dir,
+            txt_src=txt_src,
+            sent2graph=SRLSentenceToGraph(),
+            vocab_and_emb=vocab_and_emb,
+        )
+        for txt_src in lstxt_src[:1]
+    ]
+    train_dataset = split_datasets[0]
+
+    # train_dataset.draw_networkx_graph(*train_dataset[4])
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=3,
+        shuffle=False,
+        collate_fn=SentenceGraphDataset.collate_fn,
     )
-    breakpoint()
+    loader_iter = iter(train_loader)
+
+    # train_dataset.draw_networkx_graph(*train_dataset[6])
+    # train_dataset.draw_networkx_graph(*train_dataset[7])
+    # train_dataset.draw_networkx_graph(*train_dataset[8])
+
+    next(loader_iter)
+    next(loader_iter)
+    train_dataset.draw_networkx_graph(*next(loader_iter))
 
 
 if __name__ == "__main__":
