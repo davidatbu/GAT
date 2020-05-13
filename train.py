@@ -1,188 +1,164 @@
-from __future__ import division
-from __future__ import print_function
-
-import argparse
-import glob
-import os
+import logging
 import random
-import time
+from argparse import ArgumentParser
+from argparse import Namespace
+from pathlib import Path
+from typing import Any
+from typing import Dict
+from typing import Optional
 
 import numpy as np
+import sklearn.metrics as skmetrics
 import torch
-import torch.nn.functional as F
+import torch.nn as nn
 import torch.optim as optim
-from torch.autograd import Variable
+import tqdm
+from ray import tune
+from torch import Tensor
+from torch.utils.data import DataLoader
 
-from models import GAT
-from models import SpGAT
-from utils import accuracy
-from utils import load_data
+from config import GATForSeqClsfConfig
+from config import TrainConfig
+from data import load_splits
+from data import SentenceGraphDataset
+from models import GATForSeqClsf
 
-# Training settings
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    "--no-cuda", action="store_true", default=False, help="Disables CUDA training."
-)
-parser.add_argument(
-    "--fastmode",
-    action="store_true",
-    default=False,
-    help="Validate during training pass.",
-)
-parser.add_argument(
-    "--sparse",
-    action="store_true",
-    default=False,
-    help="GAT with sparse version or not.",
-)
-parser.add_argument("--seed", type=int, default=72, help="Random seed.")
-parser.add_argument(
-    "--epochs", type=int, default=10000, help="Number of epochs to train."
-)
-parser.add_argument("--lr", type=float, default=0.005, help="Initial learning rate.")
-parser.add_argument(
-    "--weight_decay",
-    type=float,
-    default=5e-4,
-    help="Weight decay (L2 loss on parameters).",
-)
-parser.add_argument("--hidden", type=int, default=8, help="Number of hidden units.")
-parser.add_argument(
-    "--nb_heads", type=int, default=8, help="Number of head attentions."
-)
-parser.add_argument(
-    "--dropout", type=float, default=0.6, help="Dropout rate (1 - keep probability)."
-)
-parser.add_argument(
-    "--alpha", type=float, default=0.2, help="Alpha for the leaky_relu."
-)
-parser.add_argument("--patience", type=int, default=100, help="Patience")
+logger = logging.getLogger("__main__")
 
-args = parser.parse_args()
-args.cuda = not args.no_cuda and torch.cuda.is_available()
 
-random.seed(args.seed)
-np.random.seed(args.seed)
-torch.manual_seed(args.seed)
-if args.cuda:
-    torch.cuda.manual_seed(args.seed)
+def parse_args() -> Namespace:
+    parser = ArgumentParser()
 
-# Load data
-adj, features, labels, idx_train, idx_val, idx_test = load_data()
+    args = parser.parse_args()
 
-# Model and optimizer
-if args.sparse:
-    model = SpGAT(
-        nfeat=features.shape[1],
-        nhid=args.hidden,
-        nclass=int(labels.max()) + 1,
-        dropout=args.dropout,
-        nheads=args.nb_heads,
-        alpha=args.alpha,
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)  # type: ignore
+
+    return args
+
+
+def main() -> None:
+    datasets_per_split, vocab_and_emb = load_splits(
+        Path(
+            "/projectnb/llamagrp/davidat/projects/graphs/data/ready/gv_2018_1160_examples/raw/"
+        )
     )
-else:
-    model = GAT(
-        nfeat=features.shape[1],
-        nhid=args.hidden,
-        nclass=int(labels.max()) + 1,
-        dropout=args.dropout,
-        nheads=args.nb_heads,
-        alpha=args.alpha,
-    )
-optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    train_dataset = datasets_per_split["train"]
+    val_dataset = datasets_per_split["val"]
 
-if args.cuda:
-    model.cuda()
-    features = features.cuda()
-    adj = adj.cuda()
-    labels = labels.cuda()
-    idx_train = idx_train.cuda()
-    idx_val = idx_val.cuda()
-    idx_test = idx_test.cuda()
+    vocab_size = vocab_and_emb.embs.size(0)
 
-features, adj, labels = Variable(features), Variable(adj), Variable(labels)
+    search_space = {
+        "lr": tune.loguniform(1e-2, 1e-5),
+        "train_batch_size": tune.choice([1]),
+        "eval_batch_size": tune.choice([1]),
+        "epochs": tune.grid_search(list(range(2, 10))),
+        "collate_fn": tune.grid_search([SentenceGraphDataset.collate_fn]),
+        "vocab_size": tune.grid_search([vocab_size]),
+        "cls_id": tune.grid_search([vocab_and_emb._cls_id]),
+        "nhid": tune.grid_search([50]),
+        "nheads": tune.grid_search([6]),
+        "embedding_dim": tune.grid_search([300]),
+        "nmid_layers": tune.grid_search([0]),
+    }
+
+    def tune_hparam(tune_config: Dict[str, Any]) -> None:
+
+        # Unpack configs
+        model_config, remaining_config = GATForSeqClsfConfig.from_dict(tune_config)
+        train_config, remaining_config = TrainConfig.from_dict(tune_config)
+        assert len(remaining_config) == 0
+
+        assert isinstance(model_config, GATForSeqClsfConfig)
+        model = GATForSeqClsf(model_config, emb_init=vocab_and_emb.embs)
+
+        assert isinstance(train_config, TrainConfig)
+        train(model, train_dataset, val_dataset, train_config)
+
+    analysis = tune.run(tune_hparam, config=search_space)
+
+    logdir = str(analysis.get_best_logdir(metric="val_acc"))
+    print(f"BEST LOG DIR IS {logdir}")
 
 
-def train(epoch):
-    t = time.time()
-    model.train()
-    optimizer.zero_grad()
-    output = model(features, adj)
-    loss_train = F.nll_loss(output[idx_train], labels[idx_train])
-    acc_train = accuracy(output[idx_train], labels[idx_train])
-    loss_train.backward()
-    optimizer.step()
+def train(
+    model: GATForSeqClsf,
+    train_dataset: SentenceGraphDataset,
+    val_dataset: SentenceGraphDataset,
+    train_config: TrainConfig,
+) -> None:
+    # Model and optimizer
+    optimizer = optim.Adam(model.parameters(), lr=train_config.lr)
 
-    if not args.fastmode:
-        # Evaluate validation set performance separately,
-        # deactivates dropout during validation run.
-        model.eval()
-        output = model(features, adj)
-
-    loss_val = F.nll_loss(output[idx_val], labels[idx_val])
-    acc_val = accuracy(output[idx_val], labels[idx_val])
-    print(
-        "Epoch: {:04d}".format(epoch + 1),
-        "loss_train: {:.4f}".format(loss_train.data.item()),
-        "acc_train: {:.4f}".format(acc_train.data.item()),
-        "loss_val: {:.4f}".format(loss_val.data.item()),
-        "acc_val: {:.4f}".format(acc_val.data.item()),
-        "time: {:.4f}s".format(time.time() - t),
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=train_config.train_batch_size,
+        collate_fn=train_config.collate_fn,
     )
 
-    return loss_val.data.item()
+    running_loss = torch.tensor(9, dtype=torch.float)
+    steps = 0
+    for epoch in range(train_config.epochs):
+        for X, y in tqdm(train_loader, desc="training "):
+            _, one_step_loss = train_one_step(model, optimizer, X, y)
+            steps += 1
+        running_loss += one_step_loss
+        running_mean_train_loss = (running_loss / steps).item()
+
+        eval_result = evaluate(model, val_dataset, train_config)
+        tune.track.log(running_mean_train_loss=running_mean_train_loss, **eval_result)
 
 
-def compute_test():
+# TODO: Use bigger batch size for validation
+def evaluate(
+    model: GATForSeqClsf, val_dataset: SentenceGraphDataset, train_config: TrainConfig,
+) -> Dict[str, float]:
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=train_config.eval_batch_size,
+        collate_fn=train_config.collate_fn,
+    )
+
     model.eval()
-    output = model(features, adj)
-    loss_test = F.nll_loss(output[idx_test], labels[idx_test])
-    acc_test = accuracy(output[idx_test], labels[idx_test])
-    print(
-        "Test set results:",
-        "loss= {:.4f}".format(loss_test.data[0]),
-        "accuracy= {:.4f}".format(acc_test.data[0]),
-    )
+    with torch.no_grad():
+        loss = torch.tensor(0, dtype=torch.float)
+        all_logits: Optional[np.ndarray] = None
+        all_y: Optional[np.ndarray] = None
+        for X, y in tqdm(val_loader, desc="validating "):
+            logits, one_step_loss = model(X=X, y=y)
+            loss += one_step_loss
+
+            if all_logits is None:
+                all_logits = logits.numpy()
+                all_y = np.array(y)
+            else:
+                all_logits = np.concatenate([all_logits, logits.numpy()], axis=0)
+                all_y = np.concatenate([all_y, np.array(y)], axis=0)
+
+    all_preds = np.argmax(all_logits, axis=1)
+    acc = skmetrics.accuracy_score(all_y, all_preds)
+    loss /= len(val_loader)
+    return {
+        "val_loss": loss.item(),
+        "val_acc": acc,
+    }
 
 
-# Train model
-t_total = time.time()
-loss_values = []
-bad_counter = 0
-best = args.epochs + 1
-best_epoch = 0
-for epoch in range(args.epochs):
-    loss_values.append(train(epoch))
+def train_one_step(
+    model: nn.Module, optimizer: optim.Optimizer, X: Any, y: Any  # type: ignore
+) -> Tensor:
+    model.train()  # Turn on the train mode
+    optimizer.zero_grad()
+    logits, loss = model(X=X, y=y)
+    loss.backward()
+    # Clipping here maybe?
+    optimizer.step()
+    return loss  # type: ignore
 
-    torch.save(model.state_dict(), "{}.pkl".format(epoch))
-    if loss_values[-1] < best:
-        best = loss_values[-1]
-        best_epoch = epoch
-        bad_counter = 0
-    else:
-        bad_counter += 1
 
-    if bad_counter == args.patience:
-        break
-
-    files = glob.glob("*.pkl")
-    for file in files:
-        epoch_nb = int(file.split(".")[0])
-        if epoch_nb < best_epoch:
-            os.remove(file)
-
-files = glob.glob("*.pkl")
-for file in files:
-    epoch_nb = int(file.split(".")[0])
-    if epoch_nb > best_epoch:
-        os.remove(file)
-
-print("Optimization Finished!")
-print("Total time elapsed: {:.4f}s".format(time.time() - t_total))
-
-# Restore best model
-print("Loading {}th epoch".format(best_epoch))
-model.load_state_dict(torch.load("{}.pkl".format(best_epoch)))
-
-# Testing
-compute_test()
+if __name__ == "__main__":
+    logging.basicConfig()
+    logger.setLevel(logging.DEBUG)
+    main()

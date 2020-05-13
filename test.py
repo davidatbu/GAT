@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 
 from block import block_diag
 from config import GATConfig
+from config import GATForSeqClsfConfig
 from data import FromIterableTextSource
 from data import SentenceGraphDataset
 from data import VocabAndEmb
@@ -18,7 +19,7 @@ from glove_embeddings import GloveWordToVec
 from layers import AttHead
 from layers import GATLayer
 from layers import GATLayerWrapper
-from models import GATModel
+from models import GATForSeqClsf
 from sent2graph import SRLSentenceToGraph
 
 logger = logging.getLogger("__main__")
@@ -51,10 +52,11 @@ class BaseGat:
             dtype=torch.float,
         )
         self.adj = torch.tensor([[1, 0, 0], [1, 0, 0], [0, 0, 1]])
-        self.y = torch.tensor([0, 1, self.X.size(1) - 1])
+        self.y = torch.tensor([0, 1, 9])
 
         self.config = GATConfig(
             embedding_dim=self.X.size(1),
+            cls_id=1,
             vocab_size=self.X.size(0),
             nmid_layers=5,
             nhid=5,
@@ -72,7 +74,7 @@ class TestAttHead(BaseGat):
 
         adam = torch.optim.Adam(head.parameters(), lr=1e-3)
         head.train()
-        n_steps = 800
+        n_steps = 1000
         crs_entrpy = nn.CrossEntropyLoss()
         for step in range(n_steps):
             logits = head(self.X, self.adj)
@@ -134,7 +136,7 @@ class TestGATLayerWrapper(BaseGat):
         print(logits.argmax(dim=1))
 
 
-class TestGATModel:
+class TestGATForSeqClsf:
     def setUp(self) -> None:
         self.txt_src = FromIterableTextSource(
             [("I love you.", "positive"), ("I hate you.", "negative"),]
@@ -158,38 +160,61 @@ class TestGATModel:
             self.dataset, collate_fn=SentenceGraphDataset.collate_fn, batch_size=2
         )
 
-    def test_batching(self) -> None:
-        prebatch = next(iter(self.loader))
-
-        # These are dataset[0] and dataset[1]
-        # [([2, 3, 4, 5], [(0, 1), (1, 2), (1, 0), (2, 1)], [1, 3], 1),
-        # ([2, 6, 4, 5], [(0, 1), (1, 2), (1, 0), (2, 1)], [1, 3], 0)]
-
-        expected_global_lsnode = [2, 3, 4, 5, 2, 6, 4, 5]
-        expected_tcadj = torch.tensor(
-            [
-                [0, 1, 0, 0, 0, 0, 0, 0],
-                [1, 0, 1, 0, 0, 0, 0, 0],
-                [0, 1, 0, 0, 0, 0, 0, 0],
-                [0, 0, 0, 0, 0, 0, 0, 0],
-                [0, 0, 0, 0, 0, 1, 0, 0],
-                [0, 0, 0, 0, 1, 0, 1, 0],
-                [0, 0, 0, 0, 0, 1, 0, 0],
-                [0, 0, 0, 0, 0, 0, 0, 0],
-            ],
-            dtype=torch.float,
+        self.config = GATForSeqClsfConfig(
+            nclass=len(self.vocab_and_emb._id2lbl),
+            vocab_size=self.vocab_and_emb.embs.size(0),
+            embedding_dim=self.vocab_and_emb.embs.size(1),
+            cls_id=self.vocab_and_emb._cls_id,
+            nmid_layers=3,
+            nhid=50,
+            nheads=6,
         )
+
+        self.gat_seq_clsf = GATForSeqClsf(self.config, self.vocab_and_emb.embs)
+
+    def test_batching(self) -> None:
+        X, y = next(iter(self.loader))
+
+        # Rember vocab_and_emb._real_tokens_start
+        expected_global_lsnode = [3, 4, 5, 6, 3, 7, 5, 6]
+        expected_lsedge_index = [
+            (0, 1),
+            (1, 2),
+            (1, 0),
+            (2, 1),
+            (4, 5),
+            (5, 6),
+            (5, 4),
+            (6, 5),
+        ]
         expected_lslshead_node = [[1, 3], [5, 7]]
-        expected_lslbl = [1, 0]
 
-        batch = GATModel.prepare_batch(prebatch)
-        global_lsnode, tcadj, lslshead_node, lslbl = batch
-
+        batch = self.gat_seq_clsf.prepare_batch(X)
+        global_lsnode, lsedge_index, lslshead_node = batch
+        tools.eq_(expected_lsedge_index, lsedge_index)
         tools.eq_(expected_global_lsnode, global_lsnode)
         tools.eq_(expected_lslshead_node, lslshead_node)
-        tools.eq_(expected_lslbl, lslbl)
 
-        torch.testing.assert_allclose(expected_tcadj, tcadj)  # type: ignore
+    def test_converges(self) -> None:
+        gat_seq_clsf = self.gat_seq_clsf
+        adam = torch.optim.Adam(gat_seq_clsf.parameters(), lr=1e-3)
+        gat_seq_clsf.train()
+        n_steps = 800
+        X, y = next(iter(self.loader))
+        print(X)
+        print(y)
+        for step in range(n_steps):
+            logits, loss = gat_seq_clsf(X, y)
+            loss.backward()
+            print(loss)
+            adam.step()
+        print(logits.argmax(dim=1))
+
+    def tearDown(self) -> None:
+        pass
+
+    def test(self) -> None:
+        pass
 
 
 if __name__ == "__main__":

@@ -1,5 +1,4 @@
 import logging
-from argparse import ArgumentParser
 from pprint import pformat
 from typing import Any
 from typing import Dict
@@ -11,7 +10,10 @@ from typing import TypeVar
 
 from allennlp.predictors.predictor import Predictor
 
-GLOBAL_DEBUG_FLAG = False
+from utils import Edge
+from utils import EdgeType
+from utils import Node
+from utils import Slice
 
 
 class FakeAllen(Predictor):  # type: ignore
@@ -53,12 +55,6 @@ class PerSplit(Dict[Literal["train", "val", "test"], V]):
         if k not in ["train", "val", "test"]:
             raise Exception("Nope.")
         super().__setitem__(k, v)
-
-
-Edge = Tuple[int, int]
-Node = int
-EdgeType = int
-Slice = Tuple[int, int]
 
 
 class SentenceToGraph:
@@ -300,16 +296,6 @@ def _test() -> None:
         sent2graph.draw_graph(tuple(lsword))
 
 
-def main() -> None:
-    global GLOBAL_DEBUG_FLAG
-    parser = ArgumentParser()
-    parser.add_argument("-d", "--debug", action="store_true")
-    args = parser.parse_args()
-
-    GLOBAL_DEBUG_FLAG = args.debug
-    _test()
-
-
 if __name__ == "__main__":
     logger.setLevel(logging.INFO)
-    main()
+    _test()

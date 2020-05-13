@@ -1,4 +1,9 @@
 from typing import Any
+from typing import Callable
+from typing import Dict
+from typing import List
+from typing import Tuple
+from typing import Union
 
 
 class Config:
@@ -6,17 +11,72 @@ class Config:
     # then an instance variable later.
     _past_init_config = False
 
-    def __setattr__(self, attr_name: str, attr: Any) -> None:
-        if self._past_init_config and not hasattr(self, attr_name):
-            raise Exception(f"{attr_name} is not an attribute of this config.")
-        super().__setattr__(attr_name, attr)
+    attr_names: List[str] = []
+
+    @classmethod
+    def from_dict(
+        cls, d: Dict[str, Any], pop_used: bool = True
+    ) -> Tuple[Union["TrainConfig", "GATForSeqClsfConfig"], Dict[str, Any]]:
+
+        d = d.copy()
+        our_kwargs: Dict[str, Any] = {}
+        for attr_name in list(
+            d.keys()
+        ):  # Hopefully list() copies, cuz otherwise we'll be modifying dictwhile loping thorugh
+            if attr_name in cls.attr_names:
+                our_kwargs[attr_name] = d.pop(attr_name)
+
+        return cls(**our_kwargs), d  # type: ignore
+
+
+class TrainConfig(Config):
+
+    attr_names: List[str] = [
+        "lr",
+        "epochs",
+        "train_batch_size",
+        "eval_batch_size",
+        "collate_fn",
+    ]
+
+    def __init__(
+        self,
+        lr: float,
+        epochs: int,
+        train_batch_size: int,
+        eval_batch_size: int,
+        collate_fn: Callable[[Any], Any],
+    ):
+        self.lr = lr
+        self.epochs = epochs
+        self.eval_batch_size = eval_batch_size
+        self.train_batch_size = train_batch_size
+        self.collate_fn = collate_fn
 
 
 class GATConfig(Config):
+
+    attr_names: List[str] = [
+        "vocab_size",
+        "embedding_dim",
+        "cls_id",
+        "nmid_layers",
+        "nhid",
+        "nheads",
+        "final_conat",
+        "batch_norm",
+        "edge_dropout_p",
+        "feat_dropout_p",
+        "alpha",
+        "do_residual",
+        "do_layer_norm",
+    ]
+
     def __init__(
         self,
         vocab_size: int,
         embedding_dim: int,
+        cls_id: int,
         nmid_layers: int,
         nhid: int,
         nheads: int,
@@ -30,6 +90,7 @@ class GATConfig(Config):
     ):
         self.vocab_size = vocab_size
         self.embedding_dim = embedding_dim
+        self.cls_id = cls_id
         self.nmid_layers = nmid_layers
         self.nhid = nhid
         self.nheads = nheads
@@ -42,3 +103,11 @@ class GATConfig(Config):
         self.do_layer_norm = do_layer_norm
 
         self._past_init_config = True
+
+
+class GATForSeqClsfConfig(GATConfig):
+    attr_names: List[str] = GATConfig.attr_names + ["nclass"]
+
+    def __init__(self, nclass: int, **kwargs: Any):
+        super().__init__(**kwargs)
+        self.nclass = nclass

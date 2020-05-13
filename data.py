@@ -1,9 +1,9 @@
 import csv
+import hashlib
 import json
 import logging
 import pickle as pkl
 from pathlib import Path
-from pprint import pformat
 from typing import Callable
 from typing import Dict
 from typing import Iterable
@@ -22,10 +22,11 @@ from typing_extensions import Literal
 
 from embeddings import WordToVec
 from glove_embeddings import GloveWordToVec
-from sent2graph import Edge
-from sent2graph import Node
 from sent2graph import SentenceToGraph
 from sent2graph import SRLSentenceToGraph
+from utils import Edge
+from utils import Node
+from utils import to_undirected
 
 logger = logging.getLogger("__main__")
 
@@ -60,7 +61,7 @@ class FromIterableTextSource(TextSource):
         return self._ls[idx]
 
     def __repr__(self) -> str:
-        return str(hash(tuple(self._ls)))
+        return hashlib.sha1(str(self._ls).encode()).hexdigest()
 
 
 class ConcatTextSource(TextSource):
@@ -209,8 +210,10 @@ class VocabAndEmb(Cacheable):
         self.txt_src = txt_src
         self.splitter = SpacyWordSplitter()
 
-        # Always
-        self._unk_id = 1
+        self._pad_id = 0
+        self._cls_id = 1
+        self._unk_id = 2
+        self._real_tokens_start = 3
 
         Cacheable.__init__(self, cache_dir=cache_dir, ignore_cache=ignore_cache)
 
@@ -249,15 +252,17 @@ class VocabAndEmb(Cacheable):
             word for word, count in word_counts.items() if count >= self.unk_thres
         ]
         # Unk token is always last
-        self._id2word = ["[PAD]", "[UNK]"] + self._id2word
+        self._id2word = ["[PAD]", "[CLS]", "[UNK]"] + self._id2word
         self._id2lbl = list(sorted(set(lslbl)))
         logger.info(f"Made id2word of length {len(self._id2word)}")
         logger.info(f"Made id2lbl of length {len(self._id2lbl)}")
 
         embs = torch.zeros((len(self._id2word), self.embedder.dim))
-        self.embedder.prefetch_lsword(self._id2word[2:])
+        self.embedder.prefetch_lsword(self._id2word[self._real_tokens_start :])
         self.embedder.set_unk_as_avg()
-        embs[2:] = self.embedder.for_lsword(self._id2word[2:])
+        embs[self._real_tokens_start :] = self.embedder.for_lsword(
+            self._id2word[self._real_tokens_start :]
+        )
         embs[self._unk_id] = self.embedder.for_unk()
         self.embs = embs
         logger.info(f"Got vocabulary embeddings of shape {self.embs.shape}")
@@ -276,7 +281,7 @@ class VocabAndEmb(Cacheable):
 
 
 class SentenceGraphDataset(
-    Iterable[Tuple[List[Node], List[Edge], List[Node], int]],
+    Iterable[Tuple[Tuple[List[Node], List[Edge], List[Node]], int]],
     Sized,
     Cacheable,
     Dataset,  # type: ignore
@@ -343,7 +348,9 @@ class SentenceGraphDataset(
     def __len__(self) -> int:
         return len(self._lslsedge_index)
 
-    def __getitem__(self, idx: int) -> Tuple[List[Node], List[Edge], List[Node], int]:
+    def __getitem__(
+        self, idx: int
+    ) -> Tuple[Tuple[List[Node], List[Edge], List[Node]], int]:
         if idx > len(self):
             raise IndexError(f"{idx} is >= {len(self)}")
         lsglobal_node = self._lslsglobal_node[idx]
@@ -351,32 +358,25 @@ class SentenceGraphDataset(
         lsedge_index = self._lslsedge_index[idx]
         lbl = self._lslbl[idx]
 
-        return lsglobal_node, lsedge_index, lshead_node, lbl
+        return (lsglobal_node, lsedge_index, lshead_node), lbl
 
-    def __iter__(self,) -> Iterator[Tuple[List[Node], List[Edge], List[Node], int]]:
+    def __iter__(
+        self,
+    ) -> Iterator[Tuple[Tuple[List[Node], List[Edge], List[Node]], int]]:
         for i in range(len(self)):
             yield self[i]
 
     @classmethod
-    def to_undirected(cls, lsedge_index: List[Edge]) -> List[Edge]:
-        # type ignore is cuz mypy can't figure out the length of a sorted list doesn't change
-        directed_edge_index: List[Edge] = sorted(
-            set([tuple(sorted(e)) for e in lsedge_index])  # type: ignore
-        )
-        undirected_edge_index = directed_edge_index + [
-            (edge[1], edge[0]) for edge in directed_edge_index
-        ]
-        return undirected_edge_index
-
-    @classmethod
     def batch_to_undirected(cls, lslsedge_index: List[List[Edge]]) -> List[List[Edge]]:
-        return [cls.to_undirected(lsedge_index) for lsedge_index in lslsedge_index]
+        return [to_undirected(lsedge_index) for lsedge_index in lslsedge_index]
 
     @staticmethod
     def collate_fn(
-        batch: List[Tuple[List[Node], torch.Tensor, int]]
-    ) -> List[Tuple[List[Node], torch.Tensor, int]]:
-        return batch
+        batch: List[Tuple[Tuple[List[Node], List[Edge], List[Node]], int]]
+    ) -> Tuple[List[Tuple[List[Node], List[Edge], List[Node]]], List[int]]:
+
+        X, y = zip(*batch)
+        return list(X), list(y)
 
     def draw_networkx_graph(
         self,
@@ -419,46 +419,22 @@ class SentenceGraphDataset(
         plt.show()
 
 
-def main() -> None:
-    txt_src = FromIterableTextSource(
-        [("I love you.", "positive"), ("I hate you.", "negative"),]
-    )
-
-    vocab_and_emb = VocabAndEmb(
-        txt_src=txt_src,
-        cache_dir=Path("/scratch"),
-        embedder=GloveWordToVec(),
-        unk_thres=1,
-        ignore_cache=True,
-    )
-
-    dataset = SentenceGraphDataset(
-        ignore_cache=True,
-        txt_src=txt_src,
-        cache_dir=Path("/scratch"),
-        sent2graph=SRLSentenceToGraph(),
-        vocab_and_emb=vocab_and_emb,
-    )
-
-    print(pformat(list(dataset)))
-    return
-
-    dataset_dir = Path(
-        "/projectnb/llamagrp/davidat/projects/graphs/data/ready/gv_2018_1160_examples/raw"
-    )
+def load_splits(
+    dataset_dir: Path,
+) -> Tuple[Dict[str, SentenceGraphDataset], VocabAndEmb]:
 
     splits = ["train", "val"]
-    lstxt_src = [
-        CsvTextSource(
+    txt_srcs = {
+        split: CsvTextSource(
             fp=(dataset_dir / f"{split}.csv"),
             txt_col="news_title",
             lbl_col="Q3 Theme1",
             allow_unlablled=False,
         )
         for split in splits
-    ]
+    }
 
-    cat_txt_src = ConcatTextSource(*lstxt_src)
+    cat_txt_src = ConcatTextSource(*txt_srcs.values())
     vocab_and_emb = VocabAndEmb(
         txt_src=cat_txt_src,
         cache_dir=dataset_dir,
@@ -466,18 +442,23 @@ def main() -> None:
         unk_thres=1,
     )
 
-    split_datasets = [  # noqa:
-        SentenceGraphDataset(
+    split_datasets = {  # noqa:
+        split: SentenceGraphDataset(
             cache_dir=dataset_dir,
             txt_src=txt_src,
             sent2graph=SRLSentenceToGraph(),
             vocab_and_emb=vocab_and_emb,
         )
-        for txt_src in lstxt_src[:1]
-    ]
-    # train_dataset = split_datasets[0]
+        for split, txt_src in txt_srcs.items()
+    }
 
-    # train_dataset.draw_networkx_graph(*next(iter(train_dataset)))
+    return split_datasets, vocab_and_emb
+
+
+def main() -> None:
+    dataset_dir = Path(  # noqa:
+        "/projectnb/llamagrp/davidat/projects/graphs/data/ready/gv_2018_1160_examples/raw"
+    )
 
 
 if __name__ == "__main__":

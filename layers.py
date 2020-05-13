@@ -94,11 +94,12 @@ class GATLayer(nn.Module):  # type: ignore
 
 
 class GATLayerWrapper(nn.Module):  # type: ignore
-    def __init__(self, config: GATConfig, concat: bool = True):
-        if config.do_residual and not concat:
-            raise Exception("Can't do resigual  connection when not concatting")
+    def __init__(
+        self, config: GATConfig, do_residual: bool = True, concat: bool = True
+    ):
+        if do_residual and not concat:
+            raise Exception("Can't do residual connection when not concatting")
         super().__init__()
-        do_residual = config.do_residual
         do_layer_norm = config.do_layer_norm
 
         self.layer = GATLayer(config, concat=concat)
