@@ -20,6 +20,7 @@ from tqdm import tqdm
 from typing_extensions import Counter
 from typing_extensions import Literal
 
+from block import block_diag
 from embeddings import WordToVec
 from glove_embeddings import GloveWordToVec
 from sent2graph import Edge
@@ -385,7 +386,7 @@ class SentenceGraphDataset(
             )
             counter += len(one_lsglobal_node)
 
-        tcadj = torch.block_diag(*batch_tcadj)  # type: ignore
+        tcadj = block_diag(*batch_tcadj)
 
         return lsglobal_node, tcadj, lslbled_node
 

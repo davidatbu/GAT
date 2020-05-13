@@ -14,7 +14,7 @@ from allennlp.predictors.predictor import Predictor
 GLOBAL_DEBUG_FLAG = False
 
 
-class FakeAllen(Predictor):
+class FakeAllen(Predictor):  # type: ignore
     def __init__(self) -> None:
         pass
 
