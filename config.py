@@ -16,7 +16,7 @@ class GATConfig(Config):
     def __init__(
         self,
         vocab_size: int,
-        in_features: int,
+        embedding_dim: int,
         nmid_layers: int,
         nhid: int,
         nheads: int,
@@ -29,7 +29,7 @@ class GATConfig(Config):
         do_layer_norm: bool = True,
     ):
         self.vocab_size = vocab_size
-        self.in_features = in_features
+        self.embedding_dim = embedding_dim
         self.nmid_layers = nmid_layers
         self.nhid = nhid
         self.nheads = nheads

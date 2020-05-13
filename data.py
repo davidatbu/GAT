@@ -3,6 +3,7 @@ import json
 import logging
 import pickle as pkl
 from pathlib import Path
+from pprint import pformat
 from typing import Callable
 from typing import Dict
 from typing import Iterable
@@ -14,13 +15,11 @@ from typing import Tuple
 
 import torch
 from allennlp.data.tokenizers.word_splitter import SpacyWordSplitter
-from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from typing_extensions import Counter
 from typing_extensions import Literal
 
-from block import block_diag
 from embeddings import WordToVec
 from glove_embeddings import GloveWordToVec
 from sent2graph import Edge
@@ -44,6 +43,24 @@ class TextSource(Iterable[Tuple[str, str]], Sized):
     def __iter__(self) -> Iterator[Tuple[str, str]]:
         for i in range(len(self)):
             yield self[i]
+
+
+class FromIterableTextSource(TextSource):
+    def __init__(self, iterable: Iterable[Tuple[str, str]]) -> None:
+        self._ls = list(iterable)
+
+    def __len__(self) -> int:
+        return len(self._ls)
+
+    def __getitem__(self, idx: int) -> Tuple[str, str]:
+        if idx < 0 or idx > len(self):
+            raise IndexError(
+                f"f{self.__class__.__name__} has only {len(self)} items. {idx} was asked, which is either negative or gretaer than length."
+            )
+        return self._ls[idx]
+
+    def __repr__(self) -> str:
+        return str(hash(tuple(self._ls)))
 
 
 class ConcatTextSource(TextSource):
@@ -259,7 +276,7 @@ class VocabAndEmb(Cacheable):
 
 
 class SentenceGraphDataset(
-    Iterable[Tuple[List[Node], torch.Tensor, List[Tuple[Node, int]]]],
+    Iterable[Tuple[List[Node], List[Edge], List[Node], int]],
     Sized,
     Cacheable,
     Dataset,  # type: ignore
@@ -326,9 +343,7 @@ class SentenceGraphDataset(
     def __len__(self) -> int:
         return len(self._lslsedge_index)
 
-    def __getitem__(
-        self, idx: int
-    ) -> Tuple[List[Node], torch.Tensor, List[Tuple[Node, int]]]:
+    def __getitem__(self, idx: int) -> Tuple[List[Node], List[Edge], List[Node], int]:
         if idx > len(self):
             raise IndexError(f"{idx} is >= {len(self)}")
         lsglobal_node = self._lslsglobal_node[idx]
@@ -336,19 +351,9 @@ class SentenceGraphDataset(
         lsedge_index = self._lslsedge_index[idx]
         lbl = self._lslbl[idx]
 
-        # Make a non sparse adjacency matrix
-        N = len(lsglobal_node)
-        tcadj: torch.Tensor = torch.zeros(N, N, dtype=torch.float)
-        tcadj[list(zip(*lsedge_index))] = 1
+        return lsglobal_node, lsedge_index, lshead_node, lbl
 
-        # Generate list of labelled nodes
-        lslbled_node = [(node, lbl) for node in lshead_node]
-
-        return lsglobal_node, tcadj, lslbled_node
-
-    def __iter__(
-        self,
-    ) -> Iterator[Tuple[List[Node], torch.Tensor, List[Tuple[Node, int]]]]:
+    def __iter__(self,) -> Iterator[Tuple[List[Node], List[Edge], List[Node], int]]:
         for i in range(len(self)):
             yield self[i]
 
@@ -369,26 +374,9 @@ class SentenceGraphDataset(
 
     @staticmethod
     def collate_fn(
-        batch: List[Tuple[List[Node], torch.Tensor, List[Tuple[Node, int]]]]
-    ) -> Tuple[List[Node], torch.Tensor, List[Tuple[Node, int]]]:
-
-        (batch_lsglobal_node, batch_tcadj, batch_lslbled_node,) = zip(*batch)
-
-        lsglobal_node: List[Node] = []
-        lslbled_node: List[Tuple[Node, int]] = []
-        counter = 0
-        for one_lsglobal_node, one_lslbled_node in zip(
-            batch_lsglobal_node, batch_lslbled_node
-        ):
-            lsglobal_node.extend(one_lsglobal_node)
-            lslbled_node.extend(
-                [(node + counter, lbl) for node, lbl in one_lslbled_node]
-            )
-            counter += len(one_lsglobal_node)
-
-        tcadj = block_diag(*batch_tcadj)
-
-        return lsglobal_node, tcadj, lslbled_node
+        batch: List[Tuple[List[Node], torch.Tensor, int]]
+    ) -> List[Tuple[List[Node], torch.Tensor, int]]:
+        return batch
 
     def draw_networkx_graph(
         self,
@@ -432,6 +420,29 @@ class SentenceGraphDataset(
 
 
 def main() -> None:
+    txt_src = FromIterableTextSource(
+        [("I love you.", "positive"), ("I hate you.", "negative"),]
+    )
+
+    vocab_and_emb = VocabAndEmb(
+        txt_src=txt_src,
+        cache_dir=Path("/scratch"),
+        embedder=GloveWordToVec(),
+        unk_thres=1,
+        ignore_cache=True,
+    )
+
+    dataset = SentenceGraphDataset(
+        ignore_cache=True,
+        txt_src=txt_src,
+        cache_dir=Path("/scratch"),
+        sent2graph=SRLSentenceToGraph(),
+        vocab_and_emb=vocab_and_emb,
+    )
+
+    print(pformat(list(dataset)))
+    return
+
     dataset_dir = Path(
         "/projectnb/llamagrp/davidat/projects/graphs/data/ready/gv_2018_1160_examples/raw"
     )
@@ -455,7 +466,7 @@ def main() -> None:
         unk_thres=1,
     )
 
-    split_datasets = [
+    split_datasets = [  # noqa:
         SentenceGraphDataset(
             cache_dir=dataset_dir,
             txt_src=txt_src,
@@ -464,24 +475,9 @@ def main() -> None:
         )
         for txt_src in lstxt_src[:1]
     ]
-    train_dataset = split_datasets[0]
+    # train_dataset = split_datasets[0]
 
-    # train_dataset.draw_networkx_graph(*train_dataset[4])
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=3,
-        shuffle=False,
-        collate_fn=SentenceGraphDataset.collate_fn,
-    )
-    loader_iter = iter(train_loader)
-
-    # train_dataset.draw_networkx_graph(*train_dataset[6])
-    # train_dataset.draw_networkx_graph(*train_dataset[7])
-    # train_dataset.draw_networkx_graph(*train_dataset[8])
-
-    next(loader_iter)
-    next(loader_iter)
-    train_dataset.draw_networkx_graph(*next(loader_iter))
+    # train_dataset.draw_networkx_graph(*next(iter(train_dataset)))
 
 
 if __name__ == "__main__":

@@ -1,8 +1,13 @@
+import logging
+from typing import Optional
+
 import torch
 import torch.nn as nn
 from torch import Tensor
 
 from config import GATConfig
+
+logger = logging.getLogger("__main__")
 
 
 class AttHead(nn.Module):  # type: ignore
@@ -13,11 +18,11 @@ class AttHead(nn.Module):  # type: ignore
     def __init__(self, config: GATConfig) -> None:
         super().__init__()
         edge_dropout_p = config.edge_dropout_p
-        in_features = config.in_features
+        embedding_dim = config.embedding_dim
         alpha = config.alpha
         nhid = config.nhid
 
-        self.W = nn.Linear(in_features, nhid, bias=False)
+        self.W = nn.Linear(embedding_dim, nhid, bias=False)
 
         self.a = nn.Parameter(torch.zeros(2 * nhid, 1, dtype=torch.float))  # type: ignore
         nn.init.xavier_uniform_(
@@ -57,7 +62,7 @@ class AttHead(nn.Module):  # type: ignore
         return (
             self.__class__.__name__
             + " ("
-            + str(self.in_features)
+            + str(self.embedding_dim)
             + " -> "
             + str(self.out_features)
             + ")"
@@ -68,9 +73,9 @@ class GATLayer(nn.Module):  # type: ignore
     def __init__(self, config: GATConfig, concat: bool = True):
         nhid = config.nhid
         nheads = config.nheads
-        in_features = config.in_features
+        embedding_dim = config.embedding_dim
 
-        if not nhid * nheads == in_features:
+        if not nhid * nheads == embedding_dim:
             raise Exception("nhid * nheads != out_features")
         super(GATLayer, self).__init__()
 
@@ -99,7 +104,7 @@ class GATLayerWrapper(nn.Module):  # type: ignore
         self.layer = GATLayer(config, concat=concat)
 
         if concat:
-            out_features = config.in_features
+            out_features = config.embedding_dim
         else:
             out_features = config.nhid
         self.layer_norm = nn.LayerNorm(out_features)
@@ -113,4 +118,34 @@ class GATLayerWrapper(nn.Module):  # type: ignore
             h_new = h_new + h  # Learnt not to do += for autograd
         if self.do_layer_norm:
             h_new = self.layer_norm(h_new)
-        return h_new  # tyype: ignore
+        return h_new  # type: ignore
+
+
+# TODO: Add positional embeddings here
+class EmbeddingWrapper(nn.Module):  # type: ignore
+    def __init__(self, config: GATConfig, emb_init: Optional[torch.Tensor]):
+        super().__init__()
+        do_layer_norm = config.do_layer_norm
+        vocab_size = config.vocab_size
+        embedding_dim = config.embedding_dim
+
+        self.embedding = nn.Embedding(
+            num_embeddings=vocab_size, embedding_dim=embedding_dim, padding_idx=0
+        )
+        if emb_init is not None:
+            logger.info(f"Initializing embeddings with pretrained embeddings ...")
+            self.embedding.from_pretrained(emb_init)
+        self.layer_norm = nn.LayerNorm(normalized_shape=embedding_dim)
+        self.do_layer_norm = do_layer_norm
+
+    def forward(self, tcword_id: torch.Tensor) -> torch.Tensor:  # type: ignore
+        h = self.embedding(tcword_id)
+
+        if self.do_layer_norm:
+            h = self.layer_norm(h)
+        return h
+
+
+if __name__ == "__main__":
+    logging.basicConfig()
+    logger.setLevel(logging.DEBUG)
