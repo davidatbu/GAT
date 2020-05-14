@@ -58,8 +58,6 @@ class GATModel(nn.Module):  # type: ignore
         lslshead_node: List[List[Node]] = []
         counter = 0
 
-        assert self.cls_id not in lsglobal_node
-
         for one_lsglobal_node, one_lsedge_index, one_lshead_node in batch:
             # Extend global node ids
             lsglobal_node.extend(one_lsglobal_node)
@@ -72,7 +70,7 @@ class GATModel(nn.Module):  # type: ignore
             # Extend lslshead node as well, but increment the numbers
             lslshead_node.append([node + counter for node in one_lshead_node])
 
-            # Increment nodee counter
+            # Increment node counter
             counter += len(one_lsglobal_node)
 
         # Make a non sparse adjacency matrix
@@ -104,6 +102,7 @@ class GATForSeqClsf(GATModel):
         # Connect all the "head nodes" to a new [CLS] node
         new_batch: List[Tuple[List[Node], List[Edge], List[Node]]] = []
         for one_lsglobal_node, one_lsedge_index, one_lshead_node in batch:
+            assert self.cls_id not in one_lsglobal_node
             new_one_lsglobal_node = one_lsglobal_node + [self.cls_id]
 
             new_cls_node = len(new_one_lsglobal_node) - 1
@@ -121,8 +120,12 @@ class GATForSeqClsf(GATModel):
     def forward(self, X: List[Tuple[List[Node], List[Edge], List[Node]]], y: Optional[List[int]]) -> Tuple[Tensor, ...]:  # type: ignore
         new_X = self.prepare_batch_for_seq_clsf(X)
 
-        lsglobal_node, lsedge_index, lscls_node = new_X
-        assert set(map(len, lscls_node)) == {1}
+        lsglobal_node, lsedge_index, lslshead_node = new_X
+
+        # "unpack" lscls_node ,since per batch, we're only looking at output of CLS token
+        assert set(map(len, lslshead_node)) == {1}
+
+        lscls_node = [lshead_node[0] for lshead_node in lslshead_node]
 
         # TODO: Maybe it will help with speed if you don't create a new tensor during every forward() call?
         word_ids = torch.tensor(lsglobal_node)
@@ -133,7 +136,7 @@ class GATForSeqClsf(GATModel):
 
         h = self.gat_layered(word_ids, adj)
 
-        cls_id_h = h[:-1]
+        cls_id_h = h[lscls_node]
 
         cls_id_h = self.dropout(cls_id_h)
         logits = self.linear(cls_id_h)
