@@ -1,4 +1,5 @@
 import logging
+from utils import load_splits
 from pathlib import Path
 
 import torch
@@ -199,8 +200,9 @@ class TestGATForSeqClsf:
         gat_seq_clsf = self.gat_seq_clsf
         adam = torch.optim.Adam(gat_seq_clsf.parameters(), lr=1e-3)
         gat_seq_clsf.train()
-        n_steps = 800
+        n_steps = 20
         X, y = next(iter(self.loader))
+
         print(X)
         print(y)
         for step in range(n_steps):
@@ -208,13 +210,66 @@ class TestGATForSeqClsf:
             loss.backward()
             print(loss)
             adam.step()
-        print(logits.argmax(dim=1))
+        preds = logits.argmax(dim=1).detach().numpy().tolist()
+        print([self.vocab_and_emb._id2lbl[i] for i in preds])
 
     def tearDown(self) -> None:
         pass
 
     def test(self) -> None:
         pass
+
+class TestOverfit:
+    def setUp(self) -> None:
+        datasets_per_split, vocab_and_emb = load_splits(
+        Path(
+            "/projectnb/llamagrp/davidat/projects/graphs/data/ready/gv_2018_1160_examples/raw/"
+        )
+    )
+        self.vocab_and_emb = vocab_and_emb
+        self.train_dataset = datasets_per_split["train"]
+        self.val_dataset = datasets_per_split["val"]
+
+    
+        self.train_loader = DataLoader(
+            self.train_dataset, collate_fn=SentenceGraphDataset.collate_fn, batch_size=2
+        )
+
+        self.config = GATForSeqClsfConfig(
+            nclass=len(self.vocab_and_emb._id2lbl),
+            vocab_size=self.vocab_and_emb.embs.size(0),
+            embedding_dim=self.vocab_and_emb.embs.size(1),
+            cls_id=self.vocab_and_emb._cls_id,
+            nmid_layers=3,
+            nhid=50,
+            nheads=6,
+        )
+
+        self.gat_seq_clsf = GATForSeqClsf(self.config, self.vocab_and_emb.embs)
+
+    def test_overfit(self) -> None:
+        gat_seq_clsf = self.gat_seq_clsf
+        adam = torch.optim.Adam(gat_seq_clsf.parameters(), lr=1e-3)
+        gat_seq_clsf.train()
+        n_steps = 20
+        X, y = next(iter(self.loader))
+
+        print(X)
+        print(y)
+        for step in range(n_steps):
+            logits, loss = gat_seq_clsf(X, y)
+            loss.backward()
+            print(loss)
+            adam.step()
+        preds = logits.argmax(dim=1).detach().numpy().tolist()
+        print([self.vocab_and_emb._id2lbl[i] for i in preds])
+
+    def tearDown(self) -> None:
+        pass
+
+    def test(self) -> None:
+        pass
+
 
 
 if __name__ == "__main__":
