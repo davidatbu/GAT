@@ -420,10 +420,9 @@ class SentenceGraphDataset(
 
 
 def load_splits(
-    dataset_dir: Path,
+    dataset_dir: Path, splits: List[str] = ["train", "val"]
 ) -> Tuple[Dict[str, SentenceGraphDataset], VocabAndEmb]:
 
-    splits = ["train", "val"]
     txt_srcs = {
         split: CsvTextSource(
             fp=(dataset_dir / f"{split}.csv"),
@@ -457,7 +456,7 @@ def load_splits(
 
 def main() -> None:
     dataset_dir = Path(  # noqa:
-        "/projectnb/llamagrp/davidat/projects/graphs/data/ready/gv_2018_1160_examples/raw"
+            "/data/paraphrase/paws/"
     )
 
 

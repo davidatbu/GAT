@@ -1,6 +1,6 @@
 import logging
-from utils import load_splits
 from pathlib import Path
+from pprint import pformat
 
 import torch
 import torch.nn as nn
@@ -13,7 +13,9 @@ from torch.utils.data import DataLoader
 from block import block_diag
 from config import GATConfig
 from config import GATForSeqClsfConfig
+from config import TrainConfig
 from data import FromIterableTextSource
+from data import load_splits
 from data import SentenceGraphDataset
 from data import VocabAndEmb
 from glove_embeddings import GloveWordToVec
@@ -22,6 +24,8 @@ from layers import GATLayer
 from layers import GATLayerWrapper
 from models import GATForSeqClsf
 from sent2graph import SRLSentenceToGraph
+from train import evaluate
+from train import train
 
 logger = logging.getLogger("__main__")
 
@@ -173,6 +177,8 @@ class TestGATForSeqClsf:
 
         self.gat_seq_clsf = GATForSeqClsf(self.config, self.vocab_and_emb.embs)
 
+
+class TestGATForSeqClsfBasic(TestGATForSeqClsf):
     def test_batching(self) -> None:
         X, y = next(iter(self.loader))
 
@@ -219,50 +225,62 @@ class TestGATForSeqClsf:
     def test(self) -> None:
         pass
 
+
 class TestOverfit:
     def setUp(self) -> None:
         datasets_per_split, vocab_and_emb = load_splits(
-        Path(
-            "/projectnb/llamagrp/davidat/projects/graphs/data/ready/gv_2018_1160_examples/raw/"
+            Path(
+                "/project/llamagrp/davidat/projects/graphs/pyGAT/data/gv_2018_10_examples/"
+            ),
+            splits=["train"],
         )
-    )
         self.vocab_and_emb = vocab_and_emb
         self.train_dataset = datasets_per_split["train"]
-        self.val_dataset = datasets_per_split["val"]
 
-    
-        self.train_loader = DataLoader(
-            self.train_dataset, collate_fn=SentenceGraphDataset.collate_fn, batch_size=2
+        self.train_config = TrainConfig(
+            lr=1e-3,
+            epochs=2,
+            train_batch_size=2,
+            eval_batch_size=2,
+            collate_fn=SentenceGraphDataset.collate_fn,
+            do_eval_every_epoch=True,
         )
 
-        self.config = GATForSeqClsfConfig(
+        model_config = GATForSeqClsfConfig(
             nclass=len(self.vocab_and_emb._id2lbl),
             vocab_size=self.vocab_and_emb.embs.size(0),
             embedding_dim=self.vocab_and_emb.embs.size(1),
             cls_id=self.vocab_and_emb._cls_id,
-            nmid_layers=3,
+            nmid_layers=0,
             nhid=50,
             nheads=6,
+            feat_dropout_p=0.7,
         )
 
-        self.gat_seq_clsf = GATForSeqClsf(self.config, self.vocab_and_emb.embs)
+        self.gat_seq_clsf = GATForSeqClsf(model_config, self.vocab_and_emb.embs)
 
     def test_overfit(self) -> None:
         gat_seq_clsf = self.gat_seq_clsf
-        adam = torch.optim.Adam(gat_seq_clsf.parameters(), lr=1e-3)
-        gat_seq_clsf.train()
-        n_steps = 20
-        X, y = next(iter(self.loader))
+        train_config = self.train_config
 
-        print(X)
-        print(y)
-        for step in range(n_steps):
-            logits, loss = gat_seq_clsf(X, y)
-            loss.backward()
-            print(loss)
-            adam.step()
-        preds = logits.argmax(dim=1).detach().numpy().tolist()
-        print([self.vocab_and_emb._id2lbl[i] for i in preds])
+        (
+            before_train_eval_metrics,
+            before_train_all_logits,
+            before_train_all_y,
+        ) = evaluate(gat_seq_clsf, self.train_dataset, train_config)
+        logger.info(
+            f"BEFORE TRAINING: eval metrics: {pformat(before_train_eval_metrics)}"
+        )
+        logger.info(f"BEFORE TRAINING: eval logits: {pformat(before_train_all_logits)}")
+        logger.info(f"BEFORE TRAINING: eval y: {pformat(before_train_all_y)}")
+
+        train(
+            gat_seq_clsf,
+            self.train_dataset,
+            val_dataset=self.train_dataset,
+            data_loader_kwargs={},
+            train_config=train_config,
+        )
 
     def tearDown(self) -> None:
         pass
@@ -270,6 +288,13 @@ class TestOverfit:
     def test(self) -> None:
         pass
 
+
+class TestGATSanity(TestGATForSeqClsf):
+    def test_inital_loss(self) -> None:
+        X, y = next(iter(self.loader))
+        logits, loss = self.gat_seq_clsf.forward(X, y)
+        print(f"len(X)={len(X)}")
+        print(loss)
 
 
 if __name__ == "__main__":

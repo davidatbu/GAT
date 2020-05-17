@@ -36,6 +36,7 @@ class TrainConfig(Config):
         "epochs",
         "train_batch_size",
         "eval_batch_size",
+        "do_eval_every_epoch",
         "collate_fn",
     ]
 
@@ -46,9 +47,11 @@ class TrainConfig(Config):
         train_batch_size: int,
         eval_batch_size: int,
         collate_fn: Callable[[Any], Any],
+        do_eval_every_epoch: bool = False,
     ):
         self.lr = lr
         self.epochs = epochs
+        self.do_eval_every_epoch = do_eval_every_epoch
         self.eval_batch_size = eval_batch_size
         self.train_batch_size = train_batch_size
         self.collate_fn = collate_fn

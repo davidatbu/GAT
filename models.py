@@ -1,4 +1,5 @@
 from typing import List
+from typing import NamedTuple
 from typing import Optional
 from typing import Tuple
 
@@ -78,6 +79,11 @@ class GATModel(nn.Module):  # type: ignore
         return lsglobal_node, lsedge_index, lslshead_node
 
 
+GATForSeqClsfForward = NamedTuple(
+    "GATForSeqClsfForward", [("logits", Tensor), ("loss", Optional[Tensor])]
+)
+
+
 class GATForSeqClsf(GATModel):
     def __init__(self, config: GATForSeqClsfConfig, emb_init: Optional[Tensor]) -> None:
         super().__init__(config, emb_init=emb_init)
@@ -117,7 +123,13 @@ class GATForSeqClsf(GATModel):
 
         return self.prepare_batch(new_batch)
 
-    def forward(self, X: List[Tuple[List[Node], List[Edge], List[Node]]], y: Optional[List[int]]) -> Tuple[Tensor, ...]:  # type: ignore
+    def forward(self, X: List[Tuple[List[Node], List[Edge], List[Node]]], y: Optional[List[int]]) -> GATForSeqClsfForward:  # type: ignore
+        """
+
+        Returns
+        -------
+        """
+
         new_X = self.prepare_batch_for_seq_clsf(X)
 
         lsglobal_node, lsedge_index, lslshead_node = new_X
@@ -141,9 +153,9 @@ class GATForSeqClsf(GATModel):
         cls_id_h = self.dropout(cls_id_h)
         logits = self.linear(cls_id_h)
 
+        loss = None
         if y is not None:
             new_y = torch.tensor(y)
             loss = self.crs_entrpy(logits, new_y)
-            return logits, loss
-        else:
-            return (logits,)
+
+        return GATForSeqClsfForward(logits, loss)
