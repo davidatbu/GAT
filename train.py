@@ -1,3 +1,4 @@
+import datetime
 import logging
 import random
 from argparse import ArgumentParser
@@ -17,6 +18,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch import Tensor
 from torch.utils.data import DataLoader
+from torch.utils.data import Dataset
 from torch.utils.tensorboard import SummaryWriter  # type: ignore
 from tqdm import tqdm
 
@@ -48,8 +50,10 @@ def parse_args() -> Namespace:
 def tune_hparam(
     parameterization: Dict[str, Any],
     model_kwargs: Dict[str, Any],
-    train_func_kwargs: Dict[str, Any],
+    train_dataset: Dataset,  # type: ignore
+    val_dataset: Dataset,  # type: ignore
     tqdm_position: int,
+    base_tb_dir: Path,
 ) -> Dict[str, Tuple[float, Optional[float]]]:
     logger.info(f"About to try: " + pformat(parameterization))
 
@@ -59,38 +63,38 @@ def tune_hparam(
     train_config, remaining_config = TrainConfig.from_dict(remaining_config)
     assert len(remaining_config) == 0
 
-    assert isinstance(model_config, GATForSeqClsfConfig)
-    model = GATForSeqClsf(model_config, **model_kwargs)
+    model = GATForSeqClsf(model_config, **model_kwargs)  # type: ignore
+    fmted_time = datetime.datetime.now().strftime("%y%m%d.%H%M%S")
+    tb_dir = base_tb_dir / f"{fmted_time}"
+    tb_dir.mkdir(exist_ok=True)
+    train_tb_writer = SummaryWriter(str(tb_dir / "train/"))
+    val_tb_writer = SummaryWriter(str(tb_dir / "val/"))
 
-    assert isinstance(train_config, TrainConfig)
-    return train(
+    results = train(
         model,
         data_loader_kwargs={},
-        train_config=train_config,
+        train_config=train_config,  # type: ignore
         tqdm_position=tqdm_position,
-        **train_func_kwargs,
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
+        train_tb_writer=train_tb_writer,
+        val_tb_writer=val_tb_writer,
     )
+    train_tb_writer.close()
+    val_tb_writer.close()
+    return results
 
 
 def main() -> None:
 
     dataset_dir = Path(
-        "/project/llamagrp/davidat/projects/graphs/pyGAT/data/gv_2018_1160_examples/"
+        "/project/llamagrp/davidat/projects/graphs/pyGAT/data/gv_2018_2_examples/"
     )
     datasets_per_split, vocab_and_emb = load_splits(dataset_dir)
     train_dataset = datasets_per_split["train"]
     val_dataset = datasets_per_split["val"]
     vocab_size = vocab_and_emb.embs.size(0)
 
-    args = parse_args()
-    # default `log_dir` is "runs" - we'll be more specific here
-    tb_writer = SummaryWriter(str(dataset_dir / "tb_run/" / args.ex_name))
-
-    train_func_kwargs = {
-        "train_dataset": train_dataset,
-        "val_dataset": val_dataset,
-        "tb_writer": tb_writer,
-    }
     model_kwargs = {"emb_init": vocab_and_emb.embs}
 
     lsparameterization: List[Dict[str, Any]] = [
@@ -112,17 +116,20 @@ def main() -> None:
             parameterization,
             model_kwargs=model_kwargs,
             tqdm_position=i,
-            train_func_kwargs=train_func_kwargs,
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            base_tb_dir=dataset_dir / "tb_logs",
         )
 
 
 def train(
     model: GATForSeqClsf,
-    train_dataset: SentenceGraphDataset,
-    val_dataset: SentenceGraphDataset,
+    train_dataset: Dataset,  # type: ignore
+    val_dataset: Dataset,  # type: ignore
     data_loader_kwargs: Dict[str, Any],
     train_config: TrainConfig,
-    tb_writer: SummaryWriter,
+    train_tb_writer: SummaryWriter,
+    val_tb_writer: SummaryWriter,
     tqdm_position: int = 0,
 ) -> Dict[str, Tuple[float, Optional[float]]]:
     # Model and optimizer
@@ -135,11 +142,12 @@ def train(
         **data_loader_kwargs,
     )
 
-    tb_writer.add_graph(model)
+    train_tb_writer.add_graph(model)
 
     running_loss = torch.tensor(9, dtype=torch.float)
     examples_seen = 0
     batches_seen = 0
+    train_tb_writer.add_graph(model, next(iter(train_loader)), verbose=True)
     for epoch in tqdm(
         range(train_config.epochs), position=2 * tqdm_position, desc="training epochs"
     ):
@@ -173,7 +181,7 @@ def train(
 # TODO: Use bigger batch size for validation
 def evaluate(
     model: GATForSeqClsf,
-    val_dataset: SentenceGraphDataset,
+    val_dataset: Dataset,  # type: ignore
     train_config: TrainConfig,
     tqdm_position: int = 0,
 ) -> Tuple[Dict[str, Tuple[float, Optional[float]]], np.ndarray, np.ndarray]:

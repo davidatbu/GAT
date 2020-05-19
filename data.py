@@ -3,14 +3,14 @@ import hashlib
 import json
 import logging
 import pickle as pkl
+from itertools import starmap
 from pathlib import Path
-from typing import Callable
+from typing import Any
 from typing import Dict
 from typing import Iterable
 from typing import Iterator
 from typing import List
 from typing import Optional
-from typing import Sized
 from typing import Tuple
 
 import torch
@@ -24,15 +24,22 @@ from embeddings import WordToVec
 from glove_embeddings import GloveWordToVec
 from sent2graph import SentenceToGraph
 from sent2graph import SRLSentenceToGraph
-from utils import Edge
+from utils import EdgeList
+from utils import grouper
 from utils import Node
+from utils import NodeList
+from utils import SentExample
+from utils import SentGraph
+from utils import SentgraphExample
 from utils import to_undirected
+
+# from p_tqdm import p_map  # type: ignore
 
 logger = logging.getLogger("__main__")
 
 
-class TextSource(Iterable[Tuple[str, str]], Sized):
-    def __getitem__(self, idx: int) -> Tuple[str, str]:
+class TextSource:
+    def __getitem__(self, idx: int) -> SentExample:
         raise NotImplementedError()
 
     def __len__(self) -> int:
@@ -41,19 +48,19 @@ class TextSource(Iterable[Tuple[str, str]], Sized):
     def __repr__(self) -> str:
         raise NotImplementedError()
 
-    def __iter__(self) -> Iterator[Tuple[str, str]]:
+    def __iter__(self) -> Iterator[SentExample]:
         for i in range(len(self)):
             yield self[i]
 
 
 class FromIterableTextSource(TextSource):
-    def __init__(self, iterable: Iterable[Tuple[str, str]]) -> None:
+    def __init__(self, iterable: Iterable[SentExample]) -> None:
         self._ls = list(iterable)
 
     def __len__(self) -> int:
         return len(self._ls)
 
-    def __getitem__(self, idx: int) -> Tuple[str, str]:
+    def __getitem__(self, idx: int) -> SentExample:
         if idx < 0 or idx > len(self):
             raise IndexError(
                 f"f{self.__class__.__name__} has only {len(self)} items. {idx} was asked, which is either negative or gretaer than length."
@@ -69,7 +76,7 @@ class ConcatTextSource(TextSource):
         self.lstxt_src = (arg,) + args
         self.lens = list(map(len, self.lstxt_src))
 
-    def __getitem__(self, idx: int) -> Tuple[str, str]:
+    def __getitem__(self, idx: int) -> SentExample:
         cur_txt_src_i = 0
         cur_len = len(self.lstxt_src[cur_txt_src_i])
         while idx >= cur_len:
@@ -86,27 +93,39 @@ class ConcatTextSource(TextSource):
 
 class CsvTextSource(TextSource):
     def __init__(
-        self, fp: Path, txt_col: str, lbl_col: str, allow_unlablled: bool
+        self,
+        fp: Path,
+        lstxt_col: List[str],
+        lbl_col: str,
+        allow_unlablled: bool,
+        csv_reader_kwargs: Dict[str, Any] = {},
     ) -> None:
 
         self.fp_stem = fp.stem
 
         with fp.open() as f:
-            reader = csv.reader(f)
+            reader = csv.reader(f, **csv_reader_kwargs)
             headers = next(reader)
-            if headers.count(txt_col) != 1 or headers.count(lbl_col) != 1:
-                raise Exception(
-                    f"{txt_col} or {lbl_col} not found as a header in csv flie {str(fp)}, or were found more than once."
-                )
-            txt_col_i = headers.index(txt_col)
+            for txt_col in lstxt_col:
+                if headers.count(txt_col) != 1 or headers.count(lbl_col) != 1:
+                    raise Exception(
+                        f"{txt_col} or {lbl_col} not found as a header in csv flie {str(fp)}, or were found more than once."
+                    )
+            lstxt_col_i = [headers.index(txt_col) for txt_col in lstxt_col]
             lbl_col_i = headers.index(lbl_col)
 
-            self.rows = [(row[txt_col_i], row[lbl_col_i]) for row in reader]
+            self.rows = [
+                SentExample(
+                    lssent=tuple(row[txt_col_i] for txt_col_i in lstxt_col_i),
+                    lbl=row[lbl_col_i],
+                )
+                for row in reader
+            ]
 
     def __repr__(self) -> str:
         return f"Csv_{self.fp_stem}"
 
-    def __getitem__(self, idx: int) -> Tuple[str, str]:
+    def __getitem__(self, idx: int) -> SentExample:
         return self.rows[idx]
 
     def __len__(self) -> int:
@@ -233,27 +252,27 @@ class VocabAndEmb(Cacheable):
         return ["lower_case", "embedder", "unk_thres", "txt_src"]
 
     def process(self) -> None:
-        lstxt, lslbl = zip(*self.txt_src)
-
-        if self.lower_case:
-            lower_func: Callable[[str], str] = lambda s: s.lower()
-            lstxt = tuple(map(lower_func, lstxt))
 
         # Compute word2id
-        lslsword: List[Tuple[str, ...]] = [
-            tuple(token.text for token in lstoken)
-            for lstoken in self.splitter.batch_split_words(lstxt)
-        ]
+
         word_counts: Counter[str] = Counter()
-        for lsword in lslsword:
-            word_counts.update(lsword)
-        assert self.unk_thres is not None
+        lslbl: List[str] = []
+
+        for lssent, lbl in self.txt_src:
+            lslbl.append(lbl)
+            for sent in lssent:
+                if self.lower_case:
+                    sent = sent.lower()
+                    lstoken = self.splitter.split_words(sent)
+                    lsword = [token.text for token in lstoken]
+                    word_counts.update(lsword)
+
         self._id2word = [
             word for word, count in word_counts.items() if count >= self.unk_thres
         ]
-        # Unk token is always last
         self._id2word = ["[PAD]", "[CLS]", "[UNK]"] + self._id2word
         self._id2lbl = list(sorted(set(lslbl)))
+        self._lblcnt = Counter(lslbl)
         logger.info(f"Made id2word of length {len(self._id2word)}")
         logger.info(f"Made id2lbl of length {len(self._id2lbl)}")
 
@@ -270,6 +289,9 @@ class VocabAndEmb(Cacheable):
     def word2id(self, word: str) -> int:
         return self._word2id.get(word, self._unk_id)
 
+    def batch_id2word(self, lsword_id: List[int]) -> List[str]:
+        return [self._id2word[word_id] for word_id in lsword_id]
+
     def lbl2id(self, lbl: str) -> int:
         return self._lbl2id[lbl]
 
@@ -280,12 +302,7 @@ class VocabAndEmb(Cacheable):
         return before_unk
 
 
-class SentenceGraphDataset(
-    Iterable[Tuple[Tuple[List[Node], List[Edge], List[Node]], int]],
-    Sized,
-    Cacheable,
-    Dataset,  # type: ignore
-):
+class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
     def __init__(
         self,
         cache_dir: Path,
@@ -300,20 +317,16 @@ class SentenceGraphDataset(
         self.sent2graph = sent2graph
         self.txt_src = txt_src
         self.vocab_and_emb = vocab_and_emb
+        self._undirected_edges = undirected_edges
 
         Cacheable.__init__(self, cache_dir=cache_dir, ignore_cache=ignore_cache)
 
-        self._lslsedge_index: List[List[Edge]]  # just a type annotation
-        if undirected_edges:
-            self._lslsedge_index = self.batch_to_undirected(self._lslsedge_index)
+        self._lslssentgraph_ex: List[SentgraphExample] = []
 
     @property
     def cached_attrs(self) -> List[Tuple[Literal["torch", "json", "pkl"], str]]:
         return [
-            ("pkl", "_lslsglobal_node"),
-            ("pkl", "_lslsedge_index"),
-            ("pkl", "_lslshead_node"),
-            ("pkl", "_lslbl"),
+            ("pkl", "_lslssentgraph_ex"),
         ]
 
     @property
@@ -326,61 +339,61 @@ class SentenceGraphDataset(
 
     def process(self) -> None:
         logger.info("Getting sentence graphs ...")
-        lslsglobal_node: List[List[Node]] = []
-        lslshead_node: List[List[Node]] = []
-        lslsedge_index: List[List[Edge]] = []
-        lssent, lslbl = list(zip(*self.txt_src))
-        for sent in tqdm(lssent, desc="Doing SRL"):
+        lssentgraph_ex: List[SentgraphExample] = list(
+            tqdm(
+                starmap(self._process_lssent, *zip(*self.txt_src),),
+                desc="Tokenizing and graphizing",
+            )
+        )
+
+        self._lslssentgraph_ex = lssentgraph_ex
+
+    def _process_lssent(self, lssent: List[str], lbl: str) -> SentgraphExample:
+        lssentgraph: List[SentGraph] = []
+        for sent in lssent:
             lsword = self.vocab_and_emb.tokenize_before_unk(sent)
-            lshead_node, lsedge_index, lsedge_type = self.sent2graph.to_graph(lsword)
+            lsedge, lsedge_type, lsimp_node, _ = self.sent2graph.to_graph(lsword)
             # We get indices relative to sentence beginngig, convert these to global ids
-            lsglobal_node = [self.vocab_and_emb.word2id(word) for word in lsword]
-
-            lslsglobal_node.append(lsglobal_node)
-            lslshead_node.append(lshead_node)
-            lslsedge_index.append(lsedge_index)
-
-        self._lslsglobal_node = lslsglobal_node
-        self._lslshead_node = lslshead_node
-        self._lslsedge_index = lslsedge_index
-        self._lslbl = [self.vocab_and_emb.lbl2id(lbl) for lbl in lslbl]
+            nodeid2wordid = [self.vocab_and_emb.word2id(word) for word in lsword]
+            sentgraph = SentGraph(
+                lsedge=lsedge,
+                lsedge_type=lsedge_type,
+                lsimp_node=lsimp_node,
+                nodeid2wordid=nodeid2wordid,
+            )
+            lssentgraph.append(sentgraph)
+        lbl_id = self.vocab_and_emb.lbl2id(lbl)
+        sentgraph_ex = SentgraphExample(lssentgraph=tuple(lssentgraph), lbl_id=lbl_id)
+        return sentgraph_ex
 
     def __len__(self) -> int:
-        return len(self._lslsedge_index)
+        return len(self._lslssentgraph_ex)
 
-    def __getitem__(
-        self, idx: int
-    ) -> Tuple[Tuple[List[Node], List[Edge], List[Node]], int]:
+    def __getitem__(self, idx: int) -> SentgraphExample:
         if idx > len(self):
             raise IndexError(f"{idx} is >= {len(self)}")
-        lsglobal_node = self._lslsglobal_node[idx]
-        lshead_node = self._lslshead_node[idx]
-        lsedge_index = self._lslsedge_index[idx]
-        lbl = self._lslbl[idx]
 
-        return (lsglobal_node, lsedge_index, lshead_node), lbl
+        return self._lslssentgraph_ex[idx]
 
-    def __iter__(
-        self,
-    ) -> Iterator[Tuple[Tuple[List[Node], List[Edge], List[Node]], int]]:
+    def __iter__(self,) -> Iterator[SentgraphExample]:
         for i in range(len(self)):
             yield self[i]
 
     @classmethod
-    def batch_to_undirected(cls, lslsedge_index: List[List[Edge]]) -> List[List[Edge]]:
+    def batch_to_undirected(cls, lslsedge_index: List[EdgeList]) -> List[EdgeList]:
         return [to_undirected(lsedge_index) for lsedge_index in lslsedge_index]
 
     @staticmethod
     def collate_fn(
-        batch: List[Tuple[Tuple[List[Node], List[Edge], List[Node]], int]]
-    ) -> Tuple[List[Tuple[List[Node], List[Edge], List[Node]]], List[int]]:
+        batch: List[Tuple[Tuple[NodeList, EdgeList, NodeList], int]]
+    ) -> Tuple[List[Tuple[NodeList, EdgeList, NodeList]], List[int]]:
 
         X, y = zip(*batch)
         return list(X), list(y)
 
     def draw_networkx_graph(
         self,
-        lsglobal_node: List[Node],
+        lsglobal_node: NodeList,
         tcadj: torch.Tensor,
         lslbled_node: List[Tuple[Node, int]],
     ) -> None:
@@ -396,14 +409,14 @@ class SentenceGraphDataset(
         }
         lsnode = list(range(len(lsglobal_node)))
 
-        lshead_node, lslbl = zip(*lslbled_node)
+        lsimp_node, lslbl = zip(*lslbled_node)
         lsnode_color: List[str] = [
-            "b" if node in lshead_node else "y" for node in lsnode
+            "b" if node in lsimp_node else "y" for node in lsnode
         ]
 
         # Append node label to nx "node labels"
-        for head_node, lbl in lslbled_node:
-            node2word[head_node] += f"|label={lbl}"
+        for imp_node, lbl in lslbled_node:
+            node2word[imp_node] += f"|label={lbl}"
 
         G = nx.Graph()
         G.add_nodes_from(lsnode)
@@ -420,25 +433,30 @@ class SentenceGraphDataset(
 
 
 def load_splits(
-    dataset_dir: Path, splits: List[str] = ["train", "val"]
+    dataset_dir: Path,
+    splits: List[str] = ["train", "val"],
+    fp_ending: str = "tsv",
+    lstxt_col: List[str] = ["sentence1", "sentence2"],
+    lbl_col: str = "label",
+    delimiter: str = "\t",
 ) -> Tuple[Dict[str, SentenceGraphDataset], VocabAndEmb]:
 
     txt_srcs = {
         split: CsvTextSource(
-            fp=(dataset_dir / f"{split}.csv"),
-            txt_col="news_title",
-            lbl_col="Q3 Theme1",
+            fp=(dataset_dir / f"{split}.{fp_ending}"),
+            lstxt_col=lstxt_col,
+            lbl_col=lbl_col,
             allow_unlablled=False,
+            csv_reader_kwargs={"delimiter": delimiter},
         )
         for split in splits
     }
 
-    cat_txt_src = ConcatTextSource(*txt_srcs.values())
     vocab_and_emb = VocabAndEmb(
-        txt_src=cat_txt_src,
+        txt_src=txt_srcs["train"],
         cache_dir=dataset_dir,
         embedder=GloveWordToVec(),
-        unk_thres=1,
+        unk_thres=2,
     )
 
     split_datasets = {  # noqa:
@@ -451,12 +469,27 @@ def load_splits(
         for split, txt_src in txt_srcs.items()
     }
 
+    logger.info("First 10 of each split")
+    for split, dataset in split_datasets.items():
+        logger.info(f"{split}")
+        for i in range(min(len(dataset), 5)):
+            lssentgraph, lbl_id = dataset[i]
+            print(f"{vocab_and_emb._id2lbl[lbl_id]}")
+            for _, _, _, lsword_id in lssentgraph:
+                print(f"\t{vocab_and_emb.batch_id2word(lsword_id)}")  # type: ignore
+
     return split_datasets, vocab_and_emb
 
 
 def main() -> None:
-    dataset_dir = Path(  # noqa:
-            "/data/paraphrase/paws/"
+    dataset_dir = Path("data/paraphrase/paws/")  # noqa:
+    load_splits(
+        dataset_dir,
+        splits=["train", "val"],
+        # fp_ending="csv",
+        # lstxt_col=["news_title"],
+        # lbl_col="Q3 Theme1",
+        # delimiter=",",
     )
 
 

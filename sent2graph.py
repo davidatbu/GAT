@@ -1,6 +1,5 @@
 import logging
 from pprint import pformat
-from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -9,42 +8,17 @@ from typing import Tuple
 from typing import TypeVar
 
 from allennlp.predictors.predictor import Predictor
+from typing_extensions import Literal
 
 from utils import Edge
 from utils import EdgeType
 from utils import Node
+from utils import SentGraph
 from utils import Slice
-
-
-class FakeAllen(Predictor):  # type: ignore
-    def __init__(self) -> None:
-        pass
-
-    def predict(self, sent: str) -> Dict[str, Any]:
-        return {
-            "verbs": [
-                {
-                    "verb": "do",
-                    "description": "[V: do] not love the world",
-                    "tags": ["B-V", "O", "O", "O", "O"],
-                },
-                {
-                    "verb": "love",
-                    "description": "do [ARGM-NEG: not] [V: love] [ARG1: the world]",
-                    "tags": ["O", "B-ARGM-NEG", "B-V", "B-ARG1", "I-ARG1"],
-                },
-            ],
-            "words": ["do", "not", "love", "the", "world"],
-        }
-
-
-from allennlp.predictors.predictor import Predictor
-from typing_extensions import Literal
 
 
 logging.basicConfig()
 logger = logging.getLogger("__main__")
-logger.setLevel(logging.DEBUG)
 
 
 V = TypeVar("V")
@@ -64,14 +38,10 @@ class SentenceToGraph:
     def __repr__(self) -> str:
         raise NotImplementedError()
 
-    def batch_to_graph(
-        self, lslsword: List[Tuple[str, ...]]
-    ) -> List[Tuple[List[int], List[Edge], List[int]]]:
+    def batch_to_graph(self, lslsword: List[Tuple[str, ...]]) -> List[SentGraph]:
         return [self.to_graph(lsword) for lsword in lslsword]
 
-    def to_graph(
-        self, lsword: Tuple[str, ...]
-    ) -> Tuple[List[int], List[Edge], List[int]]:
+    def to_graph(self, lsword: Tuple[str, ...]) -> SentGraph:
 
         raise NotImplementedError()
 
@@ -162,9 +132,7 @@ class SRLSentenceToGraph(SentenceToGraph):
     def __repr__(self) -> str:
         return "BSrl"
 
-    def to_graph(
-        self, lsword: Tuple[str, ...]
-    ) -> Tuple[List[int], List[Edge], List[int]]:
+    def to_graph(self, lsword: Tuple[str, ...]) -> SentGraph:
 
         srl_resp = self.allen.predict(" ".join(lsword))
         logger.debug(pformat(srl_resp, indent=2))
@@ -246,7 +214,8 @@ class SRLSentenceToGraph(SentenceToGraph):
         # Nodes that had no "parent" argument
         lshead_node = list(sorted(setnode))
 
-        return (lshead_node, lsedge, lsedge_type)
+        # The nodeid2wordid is None
+        return SentGraph(lsedge, lsedge_type, lshead_node, None)
 
     @staticmethod
     def _get_args_length(
@@ -262,18 +231,18 @@ class SRLSentenceToGraph(SentenceToGraph):
         import matplotlib.pyplot as plt
         import networkx as nx  # type: ignore
 
-        lshead_node, lsedge_index, lsrole_id = self.to_graph(lsword)
+        lsedge, lsedge_type, lshead_node, _ = self.to_graph(lsword)
         lsnode = list(range(len(lsword)))
         node2label = {node: word for node, word in enumerate(lsword)}
         edge2label = {
-            edge: self._id2role[role_id]
-            for edge, role_id in zip(lsedge_index, lsrole_id)
+            edge: self._id2role[edge_type]
+            for edge, edge_type in zip(lsedge, lsedge_type)
         }
         lsnode_color = ["b" if i in lshead_node else "r" for i in lsnode]
 
         G = nx.Graph()
         G.add_nodes_from(lsnode)
-        G.add_edges_from(lsedge_index)
+        G.add_edges_from(lsedge)
 
         pos = nx.spring_layout(G)
         nx.draw(
@@ -292,7 +261,24 @@ class SRLSentenceToGraph(SentenceToGraph):
 
 def _test() -> None:
     sent2graph = SRLSentenceToGraph()
-    for lsword in [["do", "not", "love", "the", "world"]]:
+    for lsword in [
+        [
+            "trump",
+            "officials",
+            "to",
+            "learn",
+            "about",
+            "safety",
+            "at",
+            "school",
+            "where",
+            "staff",
+            "has",
+            "access",
+            "to",
+            "guns",
+        ]
+    ]:
         sent2graph.draw_graph(tuple(lsword))
 
 

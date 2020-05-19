@@ -1,4 +1,5 @@
 import logging
+from utils import SentExample
 from pathlib import Path
 from pprint import pformat
 
@@ -144,7 +145,7 @@ class TestGATLayerWrapper(BaseGat):
 class TestGATForSeqClsf:
     def setUp(self) -> None:
         self.txt_src = FromIterableTextSource(
-            [("I love you.", "positive"), ("I hate you.", "negative"),]
+            [SentExample( ("I love you.",), "positive"), SentExample(("I hate you.",) "negative"))]
         )
 
         self.vocab_and_emb = VocabAndEmb(
@@ -295,6 +296,8 @@ class TestGATSanity(TestGATForSeqClsf):
         logits, loss = self.gat_seq_clsf.forward(X, y)
         print(f"len(X)={len(X)}")
         print(loss)
+
+    
 
 
 if __name__ == "__main__":
