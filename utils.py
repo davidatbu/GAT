@@ -1,5 +1,7 @@
 from itertools import zip_longest
+from typing import Any
 from typing import Iterable
+from typing import Iterator
 from typing import List
 from typing import NamedTuple
 from typing import Optional
@@ -23,12 +25,12 @@ class SentGraph(NamedTuple):
 
 
 class SentExample(NamedTuple):
-    lssent: Tuple[str, ...]
+    lssent: List[str]
     lbl: str
 
 
 class SentgraphExample(NamedTuple):
-    lssentgraph: Tuple[SentGraph, ...]
+    lssentgraph: List[SentGraph]
     lbl_id: int
 
 
@@ -46,10 +48,48 @@ def to_undirected(lsedge_index: List[Edge]) -> List[Edge]:
 _T = TypeVar("_T")
 
 
-def grouper(
-    iterable: Iterable[_T], n: int, fillvalue: Optional[_T] = None
-) -> Iterable[Tuple[Optional[_T], ...]]:
-    "Collect data into fixed-length chunks or blocks"
-    # grouper('ABCDEFG', 3, 'x') --> ABC DEF Gxx"
-    args = [iter(iterable)] * n
-    return zip_longest(*args, fillvalue=fillvalue)
+def grouper(iterable: Iterable[_T], n: int) -> Iterator[List[_T]]:
+
+    cur_batch = []
+    for i, item in enumerate(iter(iterable), start=1):
+        cur_batch.append(item)
+        if i % n == 0:
+            yield cur_batch
+            cur_batch = []
+
+
+def is_seq(item: Any) -> bool:
+    if isinstance(item, (list, tuple)):
+        return True
+    return False
+
+
+def flatten(ls: Iterable[Any]) -> Iterator[Any]:
+    for i in ls:
+        if is_seq(i):
+            for j in flatten(i):
+                yield j
+        else:
+            yield i
+
+
+def reshape_like(to_reshape: Iterable[Any], model: Any) -> Tuple[Any, int]:
+    flat = flatten(to_reshape)
+    return _reshape_like(flat, model)
+
+
+def _reshape_like(flat: Iterator[Any], model: Any) -> Tuple[Any, int]:
+
+    consumed = 0
+    reshaped = []
+
+    for child in model:
+        if is_seq(child):
+            child_reshaped, child_consumed = reshape_like(flat, child)
+            consumed += child_consumed
+        else:
+            child_reshaped = next(flat)
+            consumed += 1
+        reshaped.append(child_reshaped)
+
+    return reshaped, consumed

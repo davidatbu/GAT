@@ -3,7 +3,6 @@ import hashlib
 import json
 import logging
 import pickle as pkl
-from itertools import starmap
 from pathlib import Path
 from typing import Any
 from typing import Dict
@@ -11,6 +10,7 @@ from typing import Iterable
 from typing import Iterator
 from typing import List
 from typing import Optional
+from typing import Sized
 from typing import Tuple
 
 import torch
@@ -26,8 +26,6 @@ from sent2graph import SentenceToGraph
 from sent2graph import SRLSentenceToGraph
 from utils import EdgeList
 from utils import grouper
-from utils import Node
-from utils import NodeList
 from utils import SentExample
 from utils import SentGraph
 from utils import SentgraphExample
@@ -38,7 +36,7 @@ from utils import to_undirected
 logger = logging.getLogger("__main__")
 
 
-class TextSource:
+class TextSource(Iterable[SentExample], Sized):
     def __getitem__(self, idx: int) -> SentExample:
         raise NotImplementedError()
 
@@ -116,7 +114,7 @@ class CsvTextSource(TextSource):
 
             self.rows = [
                 SentExample(
-                    lssent=tuple(row[txt_col_i] for txt_col_i in lstxt_col_i),
+                    lssent=[row[txt_col_i] for txt_col_i in lstxt_col_i],
                     lbl=row[lbl_col_i],
                 )
                 for row in reader
@@ -218,7 +216,7 @@ class VocabAndEmb(Cacheable):
         self,
         txt_src: TextSource,
         cache_dir: Path,
-        embedder: WordToVec,
+        embedder: Optional[WordToVec],
         lower_case: bool = True,
         unk_thres: int = 1,
         ignore_cache: bool = False,
@@ -245,7 +243,7 @@ class VocabAndEmb(Cacheable):
 
     @property
     def cached_attrs(self) -> List[Tuple[Literal["torch", "json", "pkl"], str]]:
-        return [("pkl", "_id2word"), ("pkl", "_id2lbl"), ("torch", "embs")]
+        return [("pkl", "_id2word"), ("pkl", "_id2lbl"), ("torch", "_embs")]
 
     @property
     def lscache_uniquer_attr(self) -> List[str]:
@@ -276,15 +274,25 @@ class VocabAndEmb(Cacheable):
         logger.info(f"Made id2word of length {len(self._id2word)}")
         logger.info(f"Made id2lbl of length {len(self._id2lbl)}")
 
-        embs = torch.zeros((len(self._id2word), self.embedder.dim))
-        self.embedder.prefetch_lsword(self._id2word[self._real_tokens_start :])
-        self.embedder.set_unk_as_avg()
-        embs[self._real_tokens_start :] = self.embedder.for_lsword(
-            self._id2word[self._real_tokens_start :]
-        )
-        embs[self._unk_id] = self.embedder.for_unk()
-        self.embs = embs
-        logger.info(f"Got vocabulary embeddings of shape {self.embs.shape}")
+        if self.embedder is not None:
+            embs = torch.zeros((len(self._id2word), self.embedder.dim))
+            self.embedder.prefetch_lsword(self._id2word[self._real_tokens_start :])
+            self.embedder.set_unk_as_avg()
+            embs[self._real_tokens_start :] = self.embedder.for_lsword(
+                self._id2word[self._real_tokens_start :]
+            )
+            embs[self._unk_id] = self.embedder.for_unk()
+            self._embs = embs
+            logger.info(f"Got vocabulary embeddings of shape {embs.shape}")
+        else:
+            logger.info("Not getting vecs")
+            self._embs = torch.tensor([0])
+
+    @property
+    def embs(self) -> torch.Tensor:
+        if self.embedder is None:
+            raise Exception("No embedder was provided, so embs is not set.")
+        return self._embs
 
     def word2id(self, word: str) -> int:
         return self._word2id.get(word, self._unk_id)
@@ -295,11 +303,14 @@ class VocabAndEmb(Cacheable):
     def lbl2id(self, lbl: str) -> int:
         return self._lbl2id[lbl]
 
-    def tokenize_before_unk(self, sent: str) -> Tuple[str, ...]:
+    def tokenize_before_unk(self, sent: str) -> List[str]:
         if self.lower_case:
             sent = sent.lower()
-        before_unk = tuple(token.text for token in self.splitter.split_words(sent))
+        before_unk = [token.text for token in self.splitter.split_words(sent)]
         return before_unk
+
+    def batch_tokenize_before_unk(self, lssent: List[str]) -> List[List[str]]:
+        return [self.tokenize_before_unk(sent) for sent in lssent]
 
 
 class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
@@ -312,21 +323,21 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
         undirected_edges: bool = True,
         ignore_cache: bool = False,
         unk_thres: Optional[int] = None,
+        processing_batch_size: int = 800,
     ):
 
         self.sent2graph = sent2graph
         self.txt_src = txt_src
         self.vocab_and_emb = vocab_and_emb
         self._undirected_edges = undirected_edges
+        self._processing_batch_size = processing_batch_size
 
         Cacheable.__init__(self, cache_dir=cache_dir, ignore_cache=ignore_cache)
-
-        self._lslssentgraph_ex: List[SentgraphExample] = []
 
     @property
     def cached_attrs(self) -> List[Tuple[Literal["torch", "json", "pkl"], str]]:
         return [
-            ("pkl", "_lslssentgraph_ex"),
+            ("pkl", "_lssentgraph_ex"),
         ]
 
     @property
@@ -339,21 +350,75 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
 
     def process(self) -> None:
         logger.info("Getting sentence graphs ...")
-        lssentgraph_ex: List[SentgraphExample] = list(
-            tqdm(
-                starmap(self._process_lssent, *zip(*self.txt_src),),
-                desc="Tokenizing and graphizing",
-            )
+        batch_size = min(self._processing_batch_size, len(self.txt_src))
+        # Do batched SRL prediction
+        lslssent: List[List[str]]
+        batched_lssent_ex = grouper(self.txt_src, n=batch_size)
+        lssentgraph_ex: List[SentgraphExample] = []
+        num_batches = (len(self.txt_src) // batch_size) + int(
+            len(self.txt_src) % batch_size != 0
         )
+        for lssent_ex in tqdm(
+            batched_lssent_ex,
+            desc=f"Predicting SRL with batch size {batch_size}",
+            total=num_batches,
+        ):
+            one_batch_lssentgraph_ex = self._batch_process_sent_ex(lssent_ex)
+            lssentgraph_ex.extend(one_batch_lssentgraph_ex)
 
-        self._lslssentgraph_ex = lssentgraph_ex
+        self._lssentgraph_ex = lssentgraph_ex
 
-    def _process_lssent(self, lssent: List[str], lbl: str) -> SentgraphExample:
+    def _batch_process_sent_ex(
+        self, lssent_ex: List[SentExample]
+    ) -> List[SentgraphExample]:
+
+        lslssent: List[List[str]]
+        lslbl: List[str]
+        lslssent, lslbl = map(list, zip(*lssent_ex))  # type: ignore
+
+        # Easily deadl with lblids
+        lslbl_id = [self.vocab_and_emb.lbl2id(lbl) for lbl in lslbl]
+
+        lsper_column_sentgraph: List[List[SentGraph]] = []
+        for per_column_lssent in zip(*lslssent):
+            per_column_lsword = self.vocab_and_emb.batch_tokenize_before_unk(
+                list(per_column_lssent)
+            )
+            per_column_nodeid2wordid = [
+                [self.vocab_and_emb.word2id(word) for word in lsword]
+                for lsword in per_column_lsword
+            ]
+            per_column_sentgraph = self.sent2graph.batch_to_graph(per_column_lsword)
+
+            per_column_sentgraph = [
+                SentGraph(
+                    lsedge=lsedge,
+                    lsedge_type=lsedge_type,
+                    lsimp_node=lsimp_node,
+                    nodeid2wordid=nodeid2wordid,
+                )
+                for (lsedge, lsedge_type, lsimp_node, _), nodeid2wordid in zip(
+                    per_column_sentgraph, per_column_nodeid2wordid
+                )
+            ]
+
+            lsper_column_sentgraph.append(per_column_sentgraph)
+        lslssentgraph: List[List[SentGraph]] = list(
+            map(list, zip(*lsper_column_sentgraph))
+        )
+        res = [
+            SentgraphExample(lssentgraph=lssentgraph, lbl_id=lbl_id)
+            for lssentgraph, lbl_id in zip(lslssentgraph, lslbl_id)
+        ]
+        return res
+
+    def _process_lssent_ex(self, sent_ex: SentExample) -> SentgraphExample:
+        lssent, lbl = sent_ex
         lssentgraph: List[SentGraph] = []
         for sent in lssent:
             lsword = self.vocab_and_emb.tokenize_before_unk(sent)
             lsedge, lsedge_type, lsimp_node, _ = self.sent2graph.to_graph(lsword)
-            # We get indices relative to sentence beginngig, convert these to global ids
+            # We get indices relative to sentence beginnig, convert these to global ids
             nodeid2wordid = [self.vocab_and_emb.word2id(word) for word in lsword]
             sentgraph = SentGraph(
                 lsedge=lsedge,
@@ -363,17 +428,17 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
             )
             lssentgraph.append(sentgraph)
         lbl_id = self.vocab_and_emb.lbl2id(lbl)
-        sentgraph_ex = SentgraphExample(lssentgraph=tuple(lssentgraph), lbl_id=lbl_id)
+        sentgraph_ex = SentgraphExample(lssentgraph=lssentgraph, lbl_id=lbl_id)
         return sentgraph_ex
 
     def __len__(self) -> int:
-        return len(self._lslssentgraph_ex)
+        return len(self._lssentgraph_ex)
 
     def __getitem__(self, idx: int) -> SentgraphExample:
         if idx > len(self):
             raise IndexError(f"{idx} is >= {len(self)}")
 
-        return self._lslssentgraph_ex[idx]
+        return self._lssentgraph_ex[idx]
 
     def __iter__(self,) -> Iterator[SentgraphExample]:
         for i in range(len(self)):
@@ -384,52 +449,10 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
         return [to_undirected(lsedge_index) for lsedge_index in lslsedge_index]
 
     @staticmethod
-    def collate_fn(
-        batch: List[Tuple[Tuple[NodeList, EdgeList, NodeList], int]]
-    ) -> Tuple[List[Tuple[NodeList, EdgeList, NodeList]], List[int]]:
+    def collate_fn(batch: List[SentgraphExample]) -> Tuple[List[SentGraph], List[int]]:
 
         X, y = zip(*batch)
         return list(X), list(y)
-
-    def draw_networkx_graph(
-        self,
-        lsglobal_node: NodeList,
-        tcadj: torch.Tensor,
-        lslbled_node: List[Tuple[Node, int]],
-    ) -> None:
-        import matplotlib.pyplot as plt
-        import networkx as nx  # type: ignore
-
-        lsedge_index = list(map(tuple, torch.nonzero(tcadj, as_tuple=False).tolist()))
-
-        # Create nicer names
-        node2word = {
-            i: self.vocab_and_emb._id2word[word_id]
-            for i, word_id in enumerate(lsglobal_node)
-        }
-        lsnode = list(range(len(lsglobal_node)))
-
-        lsimp_node, lslbl = zip(*lslbled_node)
-        lsnode_color: List[str] = [
-            "b" if node in lsimp_node else "y" for node in lsnode
-        ]
-
-        # Append node label to nx "node labels"
-        for imp_node, lbl in lslbled_node:
-            node2word[imp_node] += f"|label={lbl}"
-
-        G = nx.Graph()
-        G.add_nodes_from(lsnode)
-        G.add_edges_from(lsedge_index)
-
-        pos = nx.planar_layout(G)
-        nx.draw(
-            G,
-            pos=pos,
-            labels=node2word,
-            node_color=lsnode_color,  # node_size=1000, # size=10000,
-        )
-        plt.show()
 
 
 def load_splits(
@@ -465,6 +488,7 @@ def load_splits(
             txt_src=txt_src,
             sent2graph=SRLSentenceToGraph(),
             vocab_and_emb=vocab_and_emb,
+            ignore_cache=True,
         )
         for split, txt_src in txt_srcs.items()
     }

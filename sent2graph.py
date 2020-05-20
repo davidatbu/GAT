@@ -1,5 +1,6 @@
 import logging
 from pprint import pformat
+from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -7,6 +8,7 @@ from typing import Set
 from typing import Tuple
 from typing import TypeVar
 
+import torch
 from allennlp.predictors.predictor import Predictor
 from typing_extensions import Literal
 
@@ -38,11 +40,10 @@ class SentenceToGraph:
     def __repr__(self) -> str:
         raise NotImplementedError()
 
-    def batch_to_graph(self, lslsword: List[Tuple[str, ...]]) -> List[SentGraph]:
+    def batch_to_graph(self, lslsword: List[List[str]]) -> List[SentGraph]:
         return [self.to_graph(lsword) for lsword in lslsword]
 
-    def to_graph(self, lsword: Tuple[str, ...]) -> SentGraph:
-
+    def to_graph(self, lsword: List[str]) -> SentGraph:
         raise NotImplementedError()
 
 
@@ -123,8 +124,15 @@ class SRLSentenceToGraph(SentenceToGraph):
     _role2id = _role2id
 
     def __init__(self) -> None:
+        if torch.cuda.is_available():
+            logger.info("Using CUDA for SRL")
+            cuda_device = 0
+        else:
+            logger.warning("NOT USING CUDA FOR SRL")
+            cuda_device = -1
         self.allen = Predictor.from_path(
-            "/projectnb/llamagrp/davidat/pretrained_models/allenlp/bert-base-srl-2019.06.17.tar.gz"
+            "/projectnb/llamagrp/davidat/pretrained_models/allenlp/bert-base-srl-2019.06.17.tar.gz",
+            cuda_device=cuda_device,
         )
 
         # self.allen = FakeAllen()
@@ -132,9 +140,16 @@ class SRLSentenceToGraph(SentenceToGraph):
     def __repr__(self) -> str:
         return "BSrl"
 
-    def to_graph(self, lsword: Tuple[str, ...]) -> SentGraph:
-
+    def to_graph(self, lsword: List[str]) -> SentGraph:
         srl_resp = self.allen.predict(" ".join(lsword))
+        return self._srl_resp_to_graph(srl_resp)
+
+    def batch_to_graph(self, lslsword: List[List[str]]) -> List[SentGraph]:
+        req_json = [{"sentence": " ".join(lsword)} for lsword in lslsword]
+        lssrl_resp = self.allen.predict_batch_json(req_json)
+        return [self._srl_resp_to_graph(srl_resp) for srl_resp in lssrl_resp]
+
+    def _srl_resp_to_graph(self, srl_resp: Dict[str, Any]) -> SentGraph:
         logger.debug(pformat(srl_resp, indent=2))
         # Sample response
         #         # Assert we had the same tokenization
@@ -174,14 +189,17 @@ class SRLSentenceToGraph(SentenceToGraph):
             # predicate is marked with a "V" "role"
             if not "V" in role2slice:
                 logger.warning(
-                    f"NO PREDICATE IN PARSE OF {lsword}. Here is one of the returned structs: {srl_desc}"
+                    f"NO PREDICATE IN PARSE OF {srl_resp['words']}. Here is one of the returned structs: {srl_desc}"
                 )
                 continue
 
             # Make sure the predicate is one word
             pred_slice = role2slice.pop("V")
             if not pred_slice[1] - pred_slice[0] == 1:
-                raise Exception("whaaaat, propbank has multiword predicates?")
+                logger.warning(
+                    f"Whaaaat, propbank has multiword predicates? {srl_desc}"
+                )
+                continue
             pred_node: Node = pred_slice[0]
 
             # Slightly restructure by converting roles to ids,
@@ -200,7 +218,7 @@ class SRLSentenceToGraph(SentenceToGraph):
         lsedge_type: List[EdgeType] = []
 
         # Begin building graph from smallest predicate structure
-        setnode: Set[Node] = set(range(len(lsword)))
+        setnode: Set[Node] = set(range(len(srl_resp["words"])))
         lspred_and_args.sort(key=self._get_args_length)
         for pred_and_args in lspred_and_args:
             pred_node = pred_and_args[0]
@@ -227,7 +245,7 @@ class SRLSentenceToGraph(SentenceToGraph):
         all_slice_end_points: List[Node] = [i for slice_ in all_slices for i in slice_]
         return max(all_slice_end_points) - min(all_slice_end_points)
 
-    def draw_graph(self, lsword: Tuple[str, ...]) -> None:
+    def draw_graph(self, lsword: List[str]) -> None:
         import matplotlib.pyplot as plt
         import networkx as nx  # type: ignore
 
@@ -257,31 +275,3 @@ class SRLSentenceToGraph(SentenceToGraph):
             G, pos=pos, edge_labels=edge2label,
         )
         plt.show()
-
-
-def _test() -> None:
-    sent2graph = SRLSentenceToGraph()
-    for lsword in [
-        [
-            "trump",
-            "officials",
-            "to",
-            "learn",
-            "about",
-            "safety",
-            "at",
-            "school",
-            "where",
-            "staff",
-            "has",
-            "access",
-            "to",
-            "guns",
-        ]
-    ]:
-        sent2graph.draw_graph(tuple(lsword))
-
-
-if __name__ == "__main__":
-    logger.setLevel(logging.INFO)
-    _test()

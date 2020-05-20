@@ -1,7 +1,8 @@
 import logging
-from utils import SentExample
 from pathlib import Path
 from pprint import pformat
+from timeit import default_timer as timer
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -26,9 +27,29 @@ from layers import GATLayerWrapper
 from models import GATForSeqClsf
 from sent2graph import SRLSentenceToGraph
 from train import evaluate
-from train import train
+from utils import flatten
+from utils import grouper
+from utils import reshape_like
+from utils import SentExample
+
+# from train import train
 
 logger = logging.getLogger("__main__")
+
+
+class Timer:
+    def __init__(self, msg: str, fmt: str = "%0.3g") -> None:
+        self.msg = msg
+        self.fmt = fmt
+
+    def __enter__(self) -> "Timer":
+        self.start = timer()
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        t = timer() - self.start
+        pformat(("%s : " + self.fmt + " seconds") % (self.msg, t))
+        self.time = t
 
 
 class BlockDiagTest:
@@ -86,9 +107,9 @@ class TestAttHead(BaseGat):
             logits = head(self.X, self.adj)
             loss = crs_entrpy(logits, self.y)
             loss.backward()
-            print(loss)
+            print(pformat(loss))
             adam.step()
-        print(logits.argmax(dim=1))
+        print(pformat(logits.argmax(dim=1)))
 
         pass
 
@@ -112,15 +133,15 @@ class TestGATLayer(BaseGat):
         layer.train()
         n_steps = 800
         crs_entrpy = nn.CrossEntropyLoss()
-        print(self.X)
-        print(self.y)
+        print(pformat(self.X))
+        print(pformat(self.y))
         for step in range(n_steps):
             logits = layer(self.X, self.adj)
             loss = crs_entrpy(logits, self.y)
             loss.backward()
-            print(loss)
+            print(pformat(loss))
             adam.step()
-        print(logits.argmax(dim=1))
+        print(pformat(logits.argmax(dim=1)))
 
 
 class TestGATLayerWrapper(BaseGat):
@@ -131,21 +152,24 @@ class TestGATLayerWrapper(BaseGat):
         layer.train()
         n_steps = 800
         crs_entrpy = nn.CrossEntropyLoss()
-        print(self.X)
-        print(self.y)
+        print(pformat(self.X))
+        print(pformat(self.y))
         for step in range(n_steps):
             logits = layer(self.X, self.adj)
             loss = crs_entrpy(logits, self.y)
             loss.backward()
-            print(loss)
+            print(pformat(loss))
             adam.step()
-        print(logits.argmax(dim=1))
+        print(pformat(logits.argmax(dim=1)))
 
 
 class TestGATForSeqClsf:
     def setUp(self) -> None:
         self.txt_src = FromIterableTextSource(
-            [SentExample( ("I love you.",), "positive"), SentExample(("I hate you.",) "negative"))]
+            [
+                SentExample(["I love you."], "positive"),
+                SentExample(["I hate you."], "negative"),
+            ]
         )
 
         self.vocab_and_emb = VocabAndEmb(
@@ -210,15 +234,15 @@ class TestGATForSeqClsfBasic(TestGATForSeqClsf):
         n_steps = 20
         X, y = next(iter(self.loader))
 
-        print(X)
-        print(y)
+        print(pformat(X))
+        print(pformat(y))
         for step in range(n_steps):
             logits, loss = gat_seq_clsf(X, y)
             loss.backward()
-            print(loss)
+            print(pformat(loss))
             adam.step()
         preds = logits.argmax(dim=1).detach().numpy().tolist()
-        print([self.vocab_and_emb._id2lbl[i] for i in preds])
+        print(pformat([self.vocab_and_emb._id2lbl[i] for i in preds]))
 
     def tearDown(self) -> None:
         pass
@@ -275,13 +299,13 @@ class TestOverfit:
         logger.info(f"BEFORE TRAINING: eval logits: {pformat(before_train_all_logits)}")
         logger.info(f"BEFORE TRAINING: eval y: {pformat(before_train_all_y)}")
 
-        train(
-            gat_seq_clsf,
-            self.train_dataset,
-            val_dataset=self.train_dataset,
-            data_loader_kwargs={},
-            train_config=train_config,
-        )
+        # train(
+        # gat_seq_clsf,
+        # self.train_dataset,
+        # val_dataset=self.train_dataset,
+        # data_loader_kwargs={},
+        # train_config=train_config,
+        # )
 
     def tearDown(self) -> None:
         pass
@@ -294,11 +318,129 @@ class TestGATSanity(TestGATForSeqClsf):
     def test_inital_loss(self) -> None:
         X, y = next(iter(self.loader))
         logits, loss = self.gat_seq_clsf.forward(X, y)
-        print(f"len(X)={len(X)}")
-        print(loss)
+        print(pformat(f"len(X))={len(X)}"))
+        print(pformat(loss))
 
-    
 
+class TestShapers:
+    def setUp(self) -> None:
+        self.nested = [
+            [[[4, 5], [1, 2], [0, 3]], [0, 1, 2], [3], [123, 234, 345, 456, 567, 678]]
+        ]
+        self.flat = [4, 5, 1, 2, 0, 3, 0, 1, 2, 3, 123, 234, 345, 456, 567, 678]
+
+        self.nested2 = [
+            [
+                [[40, 45], [41, 42], [0, 3]],
+                [0, 51, 52],
+                [51323],
+                [123, 234, 345, 456, 567, 678],
+            ]
+        ]
+
+    def test_flatten(self) -> None:
+        assert list(flatten(self.nested)) == self.flat
+
+    def test_reshape(self) -> None:
+        reshaped, consumed = reshape_like(self.flat, self.nested2)
+        ls_reshaped = list(reshaped)
+        assert ls_reshaped == self.nested
+        assert consumed == len(self.flat)
+
+    def test_grouper(self) -> None:
+        grouped = list(grouper(self.flat, n=4))
+        assert len(set(map(len, grouped))) <= 2
+        print(pformat(grouped))
+        flattened = list(flatten(grouped))
+        assert flattened == self.flat
+
+
+class TestSentenceGraphDataset:
+    def setUp(self) -> None:
+        self.txt_src = FromIterableTextSource(
+            [
+                SentExample(["I love you."], "positive"),
+                SentExample(["I hate you."], "negative"),
+                SentExample(["I adore you."], "negative"),
+            ]
+        )
+
+        self.vocab_and_emb = VocabAndEmb(
+            txt_src=self.txt_src,
+            cache_dir=Path("/scratch"),
+            embedder=None,
+            unk_thres=1,
+        )
+
+        self.sent2graph = SRLSentenceToGraph()
+        self.dataset = SentenceGraphDataset(
+            txt_src=self.txt_src,
+            cache_dir=Path("/scratch"),
+            sent2graph=self.sent2graph,
+            vocab_and_emb=self.vocab_and_emb,
+            processing_batch_size=2,
+        )
+
+        self.loader = DataLoader(
+            self.dataset, collate_fn=SentenceGraphDataset.collate_fn, batch_size=2
+        )
+
+    def test_vocab_and_emb(self) -> None:
+        assert self.vocab_and_emb._id2word == [
+            "[PAD]",
+            "[CLS]",
+            "[UNK]",
+            "i",
+            "love",
+            "you",
+            ".",
+            "hate",
+            "adore",
+        ]
+
+    def test_dataset(self) -> None:
+        print(pformat([i for i in self.dataset]))
+
+    def test_loader(self) -> None:
+        print(pformat([i for i in self.loader]))
+
+
+"""
+    def draw_networkx_graph(self, batch: List[SentGraph]) -> None:
+        import matplotlib.pyplot as plt
+        import networkx as nx  # type: ignore
+
+        lsedge_index = list(map(tuple, torch.nonzero(tcadj, as_tuple=False).tolist()))
+
+        # Create nicer names
+        node2word = {
+            i: self.vocab_and_emb._id2word[word_id]
+            for i, word_id in enumerate(lsglobal_node)
+        }
+        lsnode = list(range(len(lsglobal_node)))
+
+        lsimp_node, lslbl = zip(*lslbled_node)
+        lsnode_color: List[str] = [
+            "b" if node in lsimp_node else "y" for node in lsnode
+        ]
+
+        # Append node label to nx "node labels"
+        for imp_node, lbl in lslbled_node:
+            node2word[imp_node] += f"|label={lbl}"
+
+        G = nx.Graph()
+        G.add_nodes_from(lsnode)
+        G.add_edges_from(lsedge_index)
+        pos = nx.planar_layout(G)
+        nx.draw(
+            G,
+            pos=pos,
+            labels=node2word,
+            node_color=lsnode_color,  # node_size=1000, # size=10000,
+        )
+        plt.show()
+
+"""
 
 if __name__ == "__main__":
     logger.setLevel(logging.INFO)
