@@ -55,7 +55,7 @@ def tune_hparam(
     tqdm_position: int,
     base_tb_dir: Path,
 ) -> Dict[str, Tuple[float, Optional[float]]]:
-    logger.info(f"About to try: " + pformat(parameterization))
+    logger.info("About to try: " + pformat(parameterization))
 
     # Unpack configs
     model_config, remaining_config = GATForSeqClsfConfig.from_dict(parameterization)
@@ -64,6 +64,8 @@ def tune_hparam(
     assert len(remaining_config) == 0
 
     model = GATForSeqClsf(model_config, **model_kwargs)  # type: ignore
+    if train_config.use_cuda:  # type: ignore
+        model.cuda()
     fmted_time = datetime.datetime.now().strftime("%y%m%d.%H%M%S")
     tb_dir = base_tb_dir / f"{fmted_time}"
     tb_dir.mkdir(exist_ok=True)
@@ -164,7 +166,7 @@ def train(
             running_loss += one_step_loss
             running_mean_train_loss = (running_loss / batches_seen).item()
             eval_metrics.update({"avg_train_loss": (running_mean_train_loss, None)})
-            logger.info(f"eval results: " + pformat(eval_metrics))
+            logger.info("eval results: " + pformat(eval_metrics))
 
             for metric, value in eval_metrics.items():
                 pass
@@ -173,7 +175,7 @@ def train(
         eval_metrics, _, _ = evaluate(model, val_dataset, train_config)
         running_mean_train_loss = (running_loss / examples_seen).item()
         eval_metrics.update({"avg_train_loss": (running_mean_train_loss, None)})
-        logger.info(f"eval results: " + pformat(eval_metrics))
+        logger.info("eval results: " + pformat(eval_metrics))
 
     return eval_metrics
 

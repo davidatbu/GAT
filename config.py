@@ -38,6 +38,7 @@ class TrainConfig(Config):
         "eval_batch_size",
         "do_eval_every_epoch",
         "collate_fn",
+        "use_cuda",
     ]
 
     def __init__(
@@ -47,9 +48,11 @@ class TrainConfig(Config):
         train_batch_size: int,
         eval_batch_size: int,
         collate_fn: Callable[[Any], Any],
+        use_cuda: bool = True,
         do_eval_every_epoch: bool = False,
     ):
         self.lr = lr
+        self.use_cuda = use_cuda
         self.epochs = epochs
         self.do_eval_every_epoch = do_eval_every_epoch
         self.eval_batch_size = eval_batch_size
@@ -72,7 +75,9 @@ class GATConfig(Config):
         "feat_dropout_p",
         "alpha",
         "do_residual",
+        "undirected",
         "do_layer_norm",
+        "nedge_type",
     ]
 
     def __init__(
@@ -83,6 +88,7 @@ class GATConfig(Config):
         nmid_layers: int,
         nhid: int,
         nheads: int,
+        nedge_type: int,
         final_conat: bool = True,
         batch_norm: bool = True,
         edge_dropout_p: float = 0.0,
@@ -90,6 +96,7 @@ class GATConfig(Config):
         alpha: float = 0.2,
         do_residual: bool = True,
         do_layer_norm: bool = True,
+        undirected: bool = True,
     ):
         self.vocab_size = vocab_size
         self.embedding_dim = embedding_dim
@@ -97,6 +104,7 @@ class GATConfig(Config):
         self.nmid_layers = nmid_layers
         self.nhid = nhid
         self.nheads = nheads
+        self.nedge_type = nedge_type
         self.final_conat = final_conat
         self.batch_norm = batch_norm
         self.edge_dropout_p = edge_dropout_p
@@ -104,11 +112,13 @@ class GATConfig(Config):
         self.alpha = alpha
         self.do_residual = do_residual
         self.do_layer_norm = do_layer_norm
+        self.undirected = undirected
 
         self._past_init_config = True
 
 
 class GATForSeqClsfConfig(GATConfig):
+
     attr_names: List[str] = GATConfig.attr_names + ["nclass"]
 
     def __init__(self, nclass: int, **kwargs: Any):

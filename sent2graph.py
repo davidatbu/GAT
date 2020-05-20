@@ -1,4 +1,6 @@
 import logging
+from multiprocessing import Process
+from multiprocessing import Queue
 from pprint import pformat
 from typing import Any
 from typing import Dict
@@ -6,6 +8,7 @@ from typing import List
 from typing import Optional
 from typing import Set
 from typing import Tuple
+from typing import TYPE_CHECKING
 from typing import TypeVar
 
 import torch
@@ -33,6 +36,13 @@ class PerSplit(Dict[Literal["train", "val", "test"], V]):
         super().__setitem__(k, v)
 
 
+if TYPE_CHECKING:
+    task_queue_t = Queue[Tuple[int, Dict[str, Any]]]
+    done_queue_t = Queue[Tuple[int, SentGraph]]
+else:
+    task_queue_t = done_queue_t = Queue
+
+
 class SentenceToGraph:
     def __init__(self) -> None:
         pass
@@ -47,6 +57,7 @@ class SentenceToGraph:
         raise NotImplementedError()
 
 
+# I'm brekaing my own laws by using globals here. an FYI for future me.
 _id2role: List[str] = [
     "ARG0",
     "ARG1",
@@ -123,7 +134,7 @@ class SRLSentenceToGraph(SentenceToGraph):
     _id2role = _id2role
     _role2id = _role2id
 
-    def __init__(self) -> None:
+    def __init__(self, use_workers: bool = True) -> None:
         if torch.cuda.is_available():
             logger.info("Using CUDA for SRL")
             cuda_device = 0
@@ -135,115 +146,42 @@ class SRLSentenceToGraph(SentenceToGraph):
             cuda_device=cuda_device,
         )
 
-        # self.allen = FakeAllen()
+        self.use_workers = use_workers
+        self.task_queue: task_queue_t = Queue()
+        self.done_queue: done_queue_t = Queue()
+
+        if use_workers:
+            self.num_workers = 10
+            for i in range(self.num_workers):
+                Process(
+                    target=_srl_resp_to_graph_worker,
+                    args=(self.task_queue, self.done_queue),
+                ).start()
 
     def __repr__(self) -> str:
         return "BSrl"
 
     def to_graph(self, lsword: List[str]) -> SentGraph:
         srl_resp = self.allen.predict(" ".join(lsword))
-        return self._srl_resp_to_graph(srl_resp)
+        return _srl_resp_to_graph(srl_resp)
 
     def batch_to_graph(self, lslsword: List[List[str]]) -> List[SentGraph]:
         req_json = [{"sentence": " ".join(lsword)} for lsword in lslsword]
         lssrl_resp = self.allen.predict_batch_json(req_json)
-        return [self._srl_resp_to_graph(srl_resp) for srl_resp in lssrl_resp]
+        if not self.use_workers:
+            return [_srl_resp_to_graph(srl_resp) for srl_resp in lssrl_resp]
+        else:
+            for i, srl_resp in enumerate(lssrl_resp):
+                self.task_queue.put((i, srl_resp))
 
-    def _srl_resp_to_graph(self, srl_resp: Dict[str, Any]) -> SentGraph:
-        logger.debug(pformat(srl_resp, indent=2))
-        # Sample response
-        #         # Assert we had the same tokenization
+            lsidx_sentgraph = [self.done_queue.get() for _ in range(len(lssrl_resp))]
+            lsidx_sentgraph.sort(key=lambda tup: tup[0])
+        _, lssentgraph = zip(*lsidx_sentgraph)
+        return list(lssentgraph)
 
-        # To avoid "connections that skip levels", we need this
-        # TTO get the "head" nodes, gotta keep track of which words are not head
-        lspred_and_args: List[Tuple[Node, List[Tuple[EdgeType, Slice]]]] = []
-        for srl_desc in srl_resp["verbs"]:
-
-            cur_role: Optional[str] = None
-            cur_beg: Optional[int] = None
-
-            role2slice: Dict[str, Tuple[int, int]] = {}
-            for i, tag in enumerate(srl_desc["tags"]):
-                if tag[0] in ["O", "B"]:
-                    if cur_beg is not None:  # We *just* ended a role
-                        cur_end = i
-                        cur_slice = (cur_beg, cur_end)
-                        assert cur_role is not None
-                        role2slice[cur_role] = cur_slice
-                    cur_role = None
-                    cur_beg = None
-
-                if tag[0] == "B":  # We are beginning a role
-                    cur_role = tag[2:]
-                    cur_beg = i
-
-            # Typical need-one-check after the loop finishes
-            if cur_beg is not None:
-                cur_end = len(srl_desc["tags"])
-                assert cur_role is not None
-                cur_slice = (cur_beg, cur_end)
-                assert cur_role is not None
-                role2slice[cur_role] = cur_slice
-
-            # Check that the "predicate" is present, sometimes, allen dones't give me the predicate
-            # predicate is marked with a "V" "role"
-            if not "V" in role2slice:
-                logger.warning(
-                    f"NO PREDICATE IN PARSE OF {srl_resp['words']}. Here is one of the returned structs: {srl_desc}"
-                )
-                continue
-
-            # Make sure the predicate is one word
-            pred_slice = role2slice.pop("V")
-            if not pred_slice[1] - pred_slice[0] == 1:
-                logger.warning(
-                    f"Whaaaat, propbank has multiword predicates? {srl_desc}"
-                )
-                continue
-            pred_node: Node = pred_slice[0]
-
-            # Slightly restructure by converting roles to ids,
-            # and placing the predicate as a node of it's own
-            lsedge_type_and_arg: List[Tuple[EdgeType, Slice]] = []
-            for role, arg_slice in role2slice.items():
-                role_id = self._role2id[role]
-                lsedge_type_and_arg.append((role_id, arg_slice))
-            pred_and_args: Tuple[Node, List[Tuple[EdgeType, Slice]]] = (
-                pred_node,
-                lsedge_type_and_arg,
-            )
-            lspred_and_args.append(pred_and_args)
-
-        lsedge: List[Edge] = []
-        lsedge_type: List[EdgeType] = []
-
-        # Begin building graph from smallest predicate structure
-        setnode: Set[Node] = set(range(len(srl_resp["words"])))
-        lspred_and_args.sort(key=self._get_args_length)
-        for pred_and_args in lspred_and_args:
-            pred_node = pred_and_args[0]
-            for edge_type, arg_slice in pred_and_args[1]:
-                for arg_node in range(*arg_slice):
-                    if arg_node in setnode:
-                        lsedge.append((arg_node, pred_node))
-                        lsedge_type.append(edge_type)
-                        setnode.remove(arg_node)
-
-        # Nodes that had no "parent" argument
-        lshead_node = list(sorted(setnode))
-
-        # The nodeid2wordid is None
-        return SentGraph(lsedge, lsedge_type, lshead_node, None)
-
-    @staticmethod
-    def _get_args_length(
-        pred_and_args: Tuple[Node, List[Tuple[EdgeType, Slice]]]
-    ) -> int:
-        if len(pred_and_args[1]) == 0:
-            return 0
-        _, all_slices = zip(*pred_and_args[1])
-        all_slice_end_points: List[Node] = [i for slice_ in all_slices for i in slice_]
-        return max(all_slice_end_points) - min(all_slice_end_points)
+    def finish(self) -> None:
+        for i in range(self.num_workers):
+            self.done_queue.put("STOP")
 
     def draw_graph(self, lsword: List[str]) -> None:
         import matplotlib.pyplot as plt
@@ -275,3 +213,104 @@ class SRLSentenceToGraph(SentenceToGraph):
             G, pos=pos, edge_labels=edge2label,
         )
         plt.show()
+
+
+def _get_args_length(pred_and_args: Tuple[Node, List[Tuple[EdgeType, Slice]]]) -> int:
+    if len(pred_and_args[1]) == 0:
+        return 0
+    _, all_slices = zip(*pred_and_args[1])
+    all_slice_end_points: List[Node] = [i for slice_ in all_slices for i in slice_]
+    return max(all_slice_end_points) - min(all_slice_end_points)
+
+
+def _srl_resp_to_graph(srl_resp: Dict[str, Any]) -> SentGraph:
+    logger.debug(pformat(srl_resp, indent=2))
+    # Sample response
+    #         # Assert we had the same tokenization
+
+    # To avoid "connections that skip levels", we need this
+    # TTO get the "head" nodes, gotta keep track of which words are not head
+    lspred_and_args: List[Tuple[Node, List[Tuple[EdgeType, Slice]]]] = []
+    for srl_desc in srl_resp["verbs"]:
+
+        cur_role: Optional[str] = None
+        cur_beg: Optional[int] = None
+
+        role2slice: Dict[str, Tuple[int, int]] = {}
+        for i, tag in enumerate(srl_desc["tags"]):
+            if tag[0] in ["O", "B"]:
+                if cur_beg is not None:  # We *just* ended a role
+                    cur_end = i
+                    cur_slice = (cur_beg, cur_end)
+                    assert cur_role is not None
+                    role2slice[cur_role] = cur_slice
+                cur_role = None
+                cur_beg = None
+
+            if tag[0] == "B":  # We are beginning a role
+                cur_role = tag[2:]
+                cur_beg = i
+
+        # Typical need-one-check after the loop finishes
+        if cur_beg is not None:
+            cur_end = len(srl_desc["tags"])
+            assert cur_role is not None
+            cur_slice = (cur_beg, cur_end)
+            assert cur_role is not None
+            role2slice[cur_role] = cur_slice
+
+        # Check that the "predicate" is present, sometimes, allen dones't give me the predicate
+        # predicate is marked with a "V" "role"
+        if not "V" in role2slice:
+            logger.warning(
+                f"NO PREDICATE IN PARSE OF {srl_resp['words']}. Here is one of the returned structs: {srl_desc}"
+            )
+            continue
+
+        # Make sure the predicate is one word
+        pred_slice = role2slice.pop("V")
+        if not pred_slice[1] - pred_slice[0] == 1:
+            logger.warning(f"Whaaaat, propbank has multiword predicates? {srl_desc}")
+            continue
+        pred_node: Node = pred_slice[0]
+
+        # Slightly restructure by converting roles to ids,
+        # and placing the predicate as a node of it's own
+        lsedge_type_and_arg: List[Tuple[EdgeType, Slice]] = []
+        for role, arg_slice in role2slice.items():
+            role_id = _role2id[role]
+            lsedge_type_and_arg.append((role_id, arg_slice))
+        pred_and_args: Tuple[Node, List[Tuple[EdgeType, Slice]]] = (
+            pred_node,
+            lsedge_type_and_arg,
+        )
+        lspred_and_args.append(pred_and_args)
+
+    lsedge: List[Edge] = []
+    lsedge_type: List[EdgeType] = []
+
+    # Begin building graph from smallest predicate structure
+    setnode: Set[Node] = set(range(len(srl_resp["words"])))
+    lspred_and_args.sort(key=_get_args_length)
+    for pred_and_args in lspred_and_args:
+        pred_node = pred_and_args[0]
+        for edge_type, arg_slice in pred_and_args[1]:
+            for arg_node in range(*arg_slice):
+                if arg_node in setnode:
+                    lsedge.append((arg_node, pred_node))
+                    lsedge_type.append(edge_type)
+                    setnode.remove(arg_node)
+
+    # Nodes that had no "parent" argument
+    lshead_node = list(sorted(setnode))
+
+    # The nodeid2wordid is None
+    return SentGraph(lsedge, lsedge_type, lshead_node, None)
+
+
+def _srl_resp_to_graph_worker(
+    task_queue: task_queue_t, done_queue: done_queue_t,
+) -> None:
+    for idx, srl_resp in iter(task_queue.get, "STOP"):
+        sentgraph = _srl_resp_to_graph(srl_resp)
+        done_queue.put((idx, sentgraph))

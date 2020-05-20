@@ -506,13 +506,13 @@ def load_splits(
 
 
 def main() -> None:
-    dataset_dir = Path("data/paraphrase/paws/")  # noqa:
+    dataset_dir = Path("data/SST-2_tiny")  # noqa:
     load_splits(
         dataset_dir,
-        splits=["train", "val"],
+        splits=["train", "dev"],
         # fp_ending="csv",
-        # lstxt_col=["news_title"],
-        # lbl_col="Q3 Theme1",
+        lstxt_col=["sentence"],
+        lbl_col="label",
         # delimiter=",",
     )
 

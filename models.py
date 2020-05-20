@@ -12,8 +12,10 @@ from config import GATForSeqClsfConfig
 from layers import EmbeddingWrapper
 from layers import GATLayerWrapper
 from utils import Edge
+from utils import EdgeType
 from utils import Node
-from utils import to_undirected
+from utils import SentGraph
+from utils import sorted_directed
 
 
 class GATLayered(nn.Module):  # type: ignore
@@ -45,38 +47,55 @@ class GATModel(nn.Module):  # type: ignore
     def __init__(self, config: GATConfig, emb_init: Optional[Tensor]):
         super().__init__()
         self.cls_id = config.cls_id
+        self.head_to_cls_edge_type = config.nedge_type
+        self.undirected = config.undirected
         self.gat_layered = GATLayered(config, emb_init)
 
     def prepare_batch(
-        self, batch: List[Tuple[List[Node], List[Edge], List[Node]]]
-    ) -> Tuple[List[Node], List[Edge], List[List[Node]]]:
+        self, batch: List[SentGraph]
+    ) -> Tuple[List[Edge], List[EdgeType], List[List[Node]], List[int]]:
         """
         Increment the relative node numbers in the adjacency list, and the list of key nodes
         """
 
-        lsglobal_node: List[Node] = []
-        lsedge_index: List[Edge] = []
-        lslshead_node: List[List[Node]] = []
+        lsedge: List[Edge] = []
+        lsedge_type: List[EdgeType] = []
+        lslsimp_node: List[List[Node]] = []
+        nodeid2wordid: List[int] = []
+
         counter = 0
 
-        for one_lsglobal_node, one_lsedge_index, one_lshead_node in batch:
-            # Extend global node ids
-            lsglobal_node.extend(one_lsglobal_node)
+        for one_lsedge, one_lsedge_type, one_lsimp_node, one_nodeid2wordid in batch:
+            # Extend nodeid2wordid
+            nodeid2wordid.extend(one_nodeid2wordid)  # type: ignore # None
 
             # Extend edge index, but increment the numbers
-            lsedge_index.extend(
-                [(edge[0] + counter, edge[1] + counter) for edge in one_lsedge_index]
+            lsedge.extend(
+                [(edge[0] + counter, edge[1] + counter) for edge in one_lsedge]
             )
 
+            # Extend edge type
+            lsedge_type.extend(one_lsedge_type)
+
             # Extend lslshead node as well, but increment the numbers
-            lslshead_node.append([node + counter for node in one_lshead_node])
+            lslsimp_node.append([node + counter for node in one_lsimp_node])
 
             # Increment node counter
-            counter += len(one_lsglobal_node)
+            counter += len(one_nodeid2wordid)  # type: ignore
 
-        # Make a non sparse adjacency matrix
+        if self.undirected:
+            lsedge = sorted_directed(lsedge)
+            lsedge_inv = [(n2, n1) for n1, n2 in lsedge]
+            lsedge_type_inv = lsedge_type[:]
 
-        return lsglobal_node, lsedge_index, lslshead_node
+            lsedge = lsedge + lsedge_inv
+            lsedge_type = lsedge_type + lsedge_type_inv
+        return (
+            lsedge,
+            lsedge_type,
+            lslsimp_node,
+            nodeid2wordid,
+        )
 
 
 GATForSeqClsfForward = NamedTuple(
@@ -96,8 +115,8 @@ class GATForSeqClsf(GATModel):
         self.crs_entrpy = nn.CrossEntropyLoss()
 
     def prepare_batch_for_seq_clsf(
-        self, batch: List[Tuple[List[Node], List[Edge], List[Node]]]
-    ) -> Tuple[List[Node], List[Edge], List[List[Node]]]:
+        self, batch: List[SentGraph]
+    ) -> Tuple[List[Edge], List[EdgeType], List[List[Node]], List[int]]:
         """
          For each graph in batch
             connect each key node to a new, "CLS" node
@@ -106,24 +125,34 @@ class GATForSeqClsf(GATModel):
         """
 
         # Connect all the "head nodes" to a new [CLS] node
-        new_batch: List[Tuple[List[Node], List[Edge], List[Node]]] = []
-        for one_lsglobal_node, one_lsedge_index, one_lshead_node in batch:
-            assert self.cls_id not in one_lsglobal_node
-            new_one_lsglobal_node = one_lsglobal_node + [self.cls_id]
+        new_batch: List[SentGraph] = []
+        for one_lsedge, one_lsedge_type, one_lsimp_node, one_nodeid2wordid in batch:
+            assert one_nodeid2wordid is not None
+            assert self.cls_id not in one_nodeid2wordid
+            new_nodeid2wordid = one_nodeid2wordid + [self.cls_id]
 
-            new_cls_node = len(new_one_lsglobal_node) - 1
-            head_to_cls_edges = [(node, new_cls_node) for node in one_lshead_node]
-            new_one_lsedge_index = one_lsedge_index + to_undirected(head_to_cls_edges)
+            new_cls_node = len(new_nodeid2wordid) - 1
+            lshead_to_cls_edge = [(node, new_cls_node) for node in one_lsimp_node]
+            lshead_to_cls_edge_type = [
+                self.head_to_cls_edge_type for _ in one_lsimp_node
+            ]
+            new_lsedge = one_lsedge + lshead_to_cls_edge
+            new_lsedge_type = one_lsedge_type + lshead_to_cls_edge_type
 
-            new_one_lshead_node = [new_cls_node]
+            new_lsimp_node = [new_cls_node]
 
             new_batch.append(
-                (new_one_lsglobal_node, new_one_lsedge_index, new_one_lshead_node)
+                SentGraph(
+                    lsedge=new_lsedge,
+                    lsedge_type=new_lsedge_type,
+                    lsimp_node=new_lsimp_node,
+                    nodeid2wordid=new_nodeid2wordid,
+                )
             )
 
         return self.prepare_batch(new_batch)
 
-    def forward(self, X: List[Tuple[List[Node], List[Edge], List[Node]]], y: Optional[List[int]]) -> GATForSeqClsfForward:  # type: ignore
+    def forward(self, X: List[SentGraph], y: Optional[List[int]]) -> GATForSeqClsfForward:  # type: ignore
         """
 
         Returns
@@ -131,20 +160,19 @@ class GATForSeqClsf(GATModel):
         """
 
         new_X = self.prepare_batch_for_seq_clsf(X)
-
-        lsglobal_node, lsedge_index, lslshead_node = new_X
-
+        lsedge, lsedge_type, lslsimp_node, nodeid2wordid = new_X
         # "unpack" lscls_node ,since per batch, we're only looking at output of CLS token
-        assert set(map(len, lslshead_node)) == {1}
+        assert set(map(len, lslsimp_node)) == {1}
+        lscls_node = [lsimp_node[0] for lsimp_node in lslsimp_node]
 
-        lscls_node = [lshead_node[0] for lshead_node in lslshead_node]
+        # Device
+        device = next(self.parameters()).device
 
-        # TODO: Maybe it will help with speed if you don't create a new tensor during every forward() call?
-        word_ids = torch.tensor(lsglobal_node)
+        word_ids = torch.tensor(nodeid2wordid, device=device)
 
-        N = len(lsglobal_node)
-        adj: torch.Tensor = torch.zeros(N, N, dtype=torch.float)
-        adj[list(zip(*lsedge_index))] = 1
+        N = len(nodeid2wordid)
+        adj: torch.Tensor = torch.zeros(N, N, dtype=torch.float, device=device)
+        adj[list(zip(*lsedge))] = 1
 
         h = self.gat_layered(word_ids, adj)
 
@@ -155,7 +183,7 @@ class GATForSeqClsf(GATModel):
 
         loss = None
         if y is not None:
-            new_y = torch.tensor(y)
+            new_y = torch.tensor(y, device=device)
             loss = self.crs_entrpy(logits, new_y)
 
         return GATForSeqClsfForward(logits, loss)

@@ -1,5 +1,6 @@
 from itertools import zip_longest
 from typing import Any
+from typing import Dict
 from typing import Iterable
 from typing import Iterator
 from typing import List
@@ -43,6 +44,15 @@ def to_undirected(lsedge_index: List[Edge]) -> List[Edge]:
         (edge[1], edge[0]) for edge in directed_edge_index
     ]
     return undirected_edge_index
+
+
+def sorted_directed(lsedge: List[Edge]) -> List[Edge]:
+    dict_edge: Dict[Node, Node] = {}
+    for node1, node2 in lsedge:
+        if node1 > node2:
+            node2, node1 = node1, node2
+        dict_edge[node1] = node2
+    return list(dict_edge.items())
 
 
 _T = TypeVar("_T")
