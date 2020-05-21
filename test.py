@@ -21,7 +21,7 @@ from data import load_splits
 from data import SentenceGraphDataset
 from data import VocabAndEmb
 from glove_embeddings import GloveWordToVec
-from layers import AttHead
+from layers import DotProductAttHead
 from layers import GATLayer
 from layers import GATLayerWrapper
 from models import GATForSeqClsf
@@ -81,7 +81,7 @@ class BaseGat:
             dtype=torch.float,
         )
         self.adj = torch.tensor([[1, 0, 0], [1, 0, 0], [0, 0, 1]])
-        self.y = torch.tensor([0, 1, 9])
+        self.y = torch.tensor([0, 1, 4])
 
         self.config = GATConfig(
             embedding_dim=self.X.size(1),
@@ -97,12 +97,12 @@ class BaseGat:
 class TestAttHead(BaseGat):
     def setUp(self) -> None:
         super().setUp()
-        self.head = AttHead(self.config)
+        self.head = DotProductAttHead(self.config)
 
     def test_converges(self) -> None:
         head = self.head
 
-        adam = torch.optim.Adam(head.parameters(), lr=1e-3)
+        adam = torch.optim.Adam(head.parameters(), lr=5e-4)
         head.train()
         n_steps = 1000
         crs_entrpy = nn.CrossEntropyLoss()
@@ -197,9 +197,9 @@ class TestGATForSeqClsf:
             embedding_dim=self.vocab_and_emb.embs.size(1),
             cls_id=self.vocab_and_emb._cls_id,
             nmid_layers=3,
-            nhid=50,
+            nhid=75,
             nedge_type=4,
-            nheads=6,
+            nheads=4,
         )
 
         self.gat_seq_clsf = GATForSeqClsf(self.config, self.vocab_and_emb.embs)
@@ -405,6 +405,67 @@ class TestSentenceGraphDataset:
 
     def test_loader(self) -> None:
         print(pformat([i for i in self.loader]))
+
+
+class Test:
+    def setUp(self) -> None:
+        datasets_per_split, vocab_and_emb = load_splits(
+            Path("data/glue_data/SST-2"),
+            splits=["dev", "train"],
+            lstxt_col=["sentence"],
+        )
+        self.vocab_and_emb = vocab_and_emb
+        self.train_dataset = datasets_per_split["train"]
+
+        self.train_config = TrainConfig(
+            lr=1e-3,
+            epochs=10,
+            train_batch_size=2,
+            eval_batch_size=10,
+            collate_fn=SentenceGraphDataset.collate_fn,
+            do_eval_every_epoch=True,
+        )
+
+        model_config = GATForSeqClsfConfig(
+            nclass=len(self.vocab_and_emb._id2lbl),
+            nedge_type=9999,
+            vocab_size=self.vocab_and_emb.embs.size(0),
+            embedding_dim=self.vocab_and_emb.embs.size(1),
+            cls_id=self.vocab_and_emb._cls_id,
+            nmid_layers=0,
+            nhid=50,
+            nheads=6,
+            feat_dropout_p=0.9,
+        )
+
+        self.gat_seq_clsf = GATForSeqClsf(model_config, self.vocab_and_emb.embs)
+
+    def test_overfit(self) -> None:
+        gat_seq_clsf = self.gat_seq_clsf
+        train_config = self.train_config
+
+        (
+            before_train_eval_metrics,
+            before_train_all_logits,
+            before_train_all_y,
+        ) = evaluate(gat_seq_clsf, self.train_dataset, train_config)
+        logger.info(
+            f"BEFORE TRAINING: eval metrics: {pformat(before_train_eval_metrics)}"
+        )
+        logger.info(f"BEFORE TRAINING: eval logits: {pformat(before_train_all_logits)}")
+        logger.info(f"BEFORE TRAINING: eval y: {pformat(before_train_all_y)}")
+
+        gat_seq_clsf.train()
+        train(
+            gat_seq_clsf,
+            train_dataset=self.train_dataset,
+            val_dataset=self.train_dataset,
+            data_loader_kwargs={},
+            train_config=train_config,
+        )
+
+    def tearDown(self) -> None:
+        pass
 
 
 if __name__ == "__main__":

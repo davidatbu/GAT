@@ -49,7 +49,7 @@ class TrainConfig(Config):
         eval_batch_size: int,
         collate_fn: Callable[[Any], Any],
         use_cuda: bool = True,
-        do_eval_every_epoch: bool = False,
+        do_eval_every_epoch: bool = True,
     ):
         self.lr = lr
         self.use_cuda = use_cuda
@@ -92,7 +92,7 @@ class GATConfig(Config):
         final_conat: bool = True,
         batch_norm: bool = True,
         edge_dropout_p: float = 0.0,
-        feat_dropout_p: float = 0.1,
+        feat_dropout_p: float = 0.3,
         alpha: float = 0.2,
         do_residual: bool = True,
         do_layer_norm: bool = True,

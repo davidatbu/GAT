@@ -38,7 +38,7 @@ class PerSplit(Dict[Literal["train", "val", "test"], V]):
 
 
 if TYPE_CHECKING:
-    task_queue_t = Queue[Union[Tuple[int, Dict[str, Any]], Literal["STOP"]]]
+    task_queue_t = Queue[Tuple[int, Union[Dict[str, Any], Literal["STOP"]]]]
     done_queue_t = Queue[Tuple[int, SentGraph]]
 else:
     task_queue_t = done_queue_t = Queue
@@ -191,7 +191,7 @@ class SRLSentenceToGraph(SentenceToGraph):
 
     def finish_workers(self) -> None:
         for i in range(self.num_workers):
-            self.task_queue.put("STOP")
+            self.task_queue.put((999, "STOP"))
 
     def draw_graph(self, lsword: List[str]) -> None:
         import matplotlib.pyplot as plt
@@ -321,6 +321,8 @@ def _srl_resp_to_graph(srl_resp: Dict[str, Any]) -> SentGraph:
 def _srl_resp_to_graph_worker(
     task_queue: task_queue_t, done_queue: done_queue_t,
 ) -> None:
-    for idx, srl_resp in iter(task_queue.get, "STOP"):
+    for idx, srl_resp in iter(task_queue.get, None):
+        if srl_resp == "STOP":
+            break
         sentgraph = _srl_resp_to_graph(srl_resp)
         done_queue.put((idx, sentgraph))

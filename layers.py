@@ -1,4 +1,5 @@
 import logging
+import math
 from typing import Optional
 
 import torch
@@ -10,11 +11,61 @@ from config import GATConfig
 logger = logging.getLogger("__main__")
 
 
-class AttHead(nn.Module):  # type: ignore
-    """
-    Simple GAT layer, similar to https://arxiv.org/abs/1710.10903
-    """
+class DotProductAttHead(nn.Module):  # type: ignore
+    def __init__(self, config: GATConfig) -> None:
+        super().__init__()
+        edge_dropout_p = config.edge_dropout_p
+        embedding_dim = config.embedding_dim
+        alpha = config.alpha
+        nhid = config.nhid
 
+        self.W_q = nn.Linear(embedding_dim, nhid)
+        self.W_k = nn.Linear(embedding_dim, nhid)
+
+        self.W_v = nn.Linear(
+            embedding_dim, nhid, bias=False
+        )  # Why have bias if the layer normalization will add?
+
+        # self.a2 = torch.empty(out_features, 1, dtype=torch.float)
+        # nn.init.xavier_uniform_(
+        # self.a, gain=nn.init.calculate_gain("leaky_relu", alpha)  # type: ignore
+        # )
+        self.nhid = nhid
+        self.leakyrelu = nn.LeakyReLU(alpha)
+        self.softmax = nn.Softmax(dim=1)
+        self.edge_dropout = nn.Dropout(p=edge_dropout_p)
+
+    def forward(self, input: torch.Tensor, adj: torch.Tensor) -> torch.Tensor:  # type: ignore
+
+        Q = self.W_q(input)
+        K = self.W_k(input)
+        V = self.W_v(input)
+
+        att_scores = Q @ K.t()
+
+        att_scores /= self.nhid
+
+        zero_vec = -9e15 * torch.ones_like(att_scores)
+        att_scores = torch.where(adj > 0, att_scores, zero_vec)
+        att_scores /= math.sqrt(self.nhid)
+        att_probs = self.softmax(att_scores)
+
+        h_prime = att_probs @ V
+
+        return h_prime
+
+    def __repr__(self) -> str:
+        return (
+            self.__class__.__name__
+            + " ("
+            + str(self.embedding_dim)
+            + " -> "
+            + str(self.out_features)
+            + ")"
+        )
+
+
+class AdditiveAttHead(nn.Module):  # type: ignore
     def __init__(self, config: GATConfig) -> None:
         super().__init__()
         edge_dropout_p = config.edge_dropout_p
@@ -79,7 +130,9 @@ class GATLayer(nn.Module):  # type: ignore
             raise Exception("nhid * nheads != out_features")
         super(GATLayer, self).__init__()
 
-        self.attentions = nn.ModuleList([AttHead(config) for _ in range(nheads)])
+        self.attentions = nn.ModuleList(
+            [DotProductAttHead(config) for _ in range(nheads)]
+        )
         self.concat = concat
         self.elu = nn.ELU()
 
@@ -134,7 +187,7 @@ class EmbeddingWrapper(nn.Module):  # type: ignore
             num_embeddings=vocab_size, embedding_dim=embedding_dim, padding_idx=0
         )
         if emb_init is not None:
-            logger.info(f"Initializing embeddings with pretrained embeddings ...")
+            logger.info("Initializing embeddings with pretrained embeddings ...")
             self.embedding.from_pretrained(emb_init)
         self.layer_norm = nn.LayerNorm(normalized_shape=embedding_dim)
         self.do_layer_norm = do_layer_norm

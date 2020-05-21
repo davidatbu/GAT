@@ -52,7 +52,7 @@ class GATModel(nn.Module):  # type: ignore
         self.undirected = config.undirected
         self.gat_layered = GATLayered(config, emb_init)
 
-    def prepare_batch(
+    def _base_prepare_batch(
         self, batch: List[SentGraph]
     ) -> Tuple[List[Edge], List[EdgeType], List[List[Node]], List[int]]:
         """
@@ -99,11 +99,6 @@ class GATModel(nn.Module):  # type: ignore
         )
 
 
-GATForSeqClsfForward = NamedTuple(
-    "GATForSeqClsfForward", [("logits", Tensor), ("loss", Optional[Tensor])]
-)
-
-
 class GATForSeqClsf(GATModel):
     def __init__(self, config: GATForSeqClsfConfig, emb_init: Optional[Tensor]) -> None:
         super().__init__(config, emb_init=emb_init)
@@ -120,14 +115,14 @@ class GATForSeqClsf(GATModel):
         for ex in batch:
             yield ex[0]
 
-    def prepare_batch_for_seq_clsf(
+    def prepare_batch(
         self, batch: List[List[SentGraph]]
-    ) -> Tuple[List[Edge], List[EdgeType], List[List[Node]], List[int]]:
+    ) -> Tuple[Tensor, Tensor, Tensor]:
         """
          For each graph in batch
             connect each key node to a new, "CLS" node
             make that "CLS" node the only node in list of key nodes
-        do super().prepare_batch()
+        do super()._base_prepare_batch()
         """
 
         # Ensure that we are processing only one sentgraph per example
@@ -163,21 +158,11 @@ class GATForSeqClsf(GATModel):
                     nodeid2wordid=new_nodeid2wordid,
                 )
             )
-
-        return self.prepare_batch(new_batch)
-
-    def forward(self, X: List[List[SentGraph]], y: Optional[List[int]]) -> GATForSeqClsfForward:  # type: ignore
-        """
-
-        Returns
-        -------
-        """
-
-        new_X = self.prepare_batch_for_seq_clsf(X)
-        lsedge, lsedge_type, lslsimp_node, nodeid2wordid = new_X
+        final_pre_torch_preped_X = self._base_prepare_batch(new_batch)
+        lsedge, lsedge_type, lslsimp_node, nodeid2wordid = final_pre_torch_preped_X
         # "unpack" lscls_node ,since per batch, we're only looking at output of CLS token
         assert set(map(len, lslsimp_node)) == {1}
-        lscls_node = [lsimp_node[0] for lsimp_node in lslsimp_node]
+        cls_node = torch.tensor([lsimp_node[0] for lsimp_node in lslsimp_node])
 
         # Device
         device = next(self.parameters()).device
@@ -188,16 +173,25 @@ class GATForSeqClsf(GATModel):
         adj: torch.Tensor = torch.zeros(N, N, dtype=torch.float, device=device)
         adj[list(zip(*lsedge))] = 1
 
+        return (word_ids, adj, cls_node)
+
+    def forward(self, prepared_X: Tuple[Tensor, Tensor, Tensor], y: Optional[List[int]] = None) -> Tuple[Tensor, ...]:  # type: ignore
+        """
+
+        Returns
+        -------
+        """
+        word_ids, adj, cls_node = prepared_X
+
         h = self.gat_layered(word_ids, adj)
 
-        cls_id_h = h[lscls_node]
+        cls_id_h = h[cls_node]
 
         cls_id_h = self.dropout(cls_id_h)
         logits = self.linear(cls_id_h)
 
-        loss = None
         if y is not None:
-            new_y = torch.tensor(y, device=device)
+            new_y = torch.tensor(y, device=next(self.parameters()).device)
             loss = self.crs_entrpy(logits, new_y)
-
-        return GATForSeqClsfForward(logits, loss)
+            return (logits, loss)
+        return (logits,)
