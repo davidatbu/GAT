@@ -154,6 +154,7 @@ class GATLayerWrapper(nn.Module):  # type: ignore
             raise Exception("Can't do residual connection when not concatting")
         super().__init__()
         do_layer_norm = config.do_layer_norm
+        feat_dropout_p = config.feat_dropout_p
 
         self.layer = GATLayer(config, concat=concat)
 
@@ -162,17 +163,57 @@ class GATLayerWrapper(nn.Module):  # type: ignore
         else:
             out_features = config.nhid
         self.layer_norm = nn.LayerNorm(out_features)
+        self.dropout = nn.Dropout(feat_dropout_p)
 
         self.do_residual = do_residual
         self.do_layer_norm = do_layer_norm
 
     def forward(self, h: Tensor, adj: Tensor) -> torch.Tensor:  # type: ignore
+        h = self.dropout(h)
         h_new = self.layer(h, adj)
         if self.do_residual:
             h_new = h_new + h  # Learnt not to do += for autograd
         if self.do_layer_norm:
             h_new = self.layer_norm(h_new)
         return h_new  # type: ignore
+
+
+class FeedForwardWrapper(nn.Module):  # type: ignore
+    def __init__(
+        self, config: GATConfig, do_residual: bool = True, concat: bool = True
+    ):
+        if do_residual and not concat:
+            raise Exception("Can't do residual connection when not concatting")
+        super().__init__()
+        do_layer_norm = config.do_layer_norm
+        embedding_dim = config.embedding_dim
+        nhid = config.nhid
+        feat_dropout_p = config.feat_dropout_p
+
+        w2_bias = True
+        if do_layer_norm:
+            w2_bias = False
+
+        self.W1 = nn.Linear(embedding_dim, embedding_dim * 4, bias=True)
+        if concat:
+            out_features = embedding_dim
+        else:
+            out_features = config.nhid
+        self.W2 = nn.Linear(embedding_dim * 4, nhid, bias=w2_bias)
+        self.layer_norm = nn.LayerNorm(out_features)
+
+        self.do_residual = do_residual
+        self.do_layer_norm = do_layer_norm
+        self.dropout = nn.Dropout(feat_dropout_p)
+
+    def forward(self, h: Tensor) -> torch.Tensor:  # type: ignore
+        h = self.dropout(h)
+        h_new = self.W2(self.W1(h))
+        if self.do_residual:
+            h_new = h_new + h  # Learnt not to do += for autograd
+        if self.do_layer_norm:
+            h_new = self.layer_norm(h_new)
+        return h_new
 
 
 # TODO: Add positional embeddings here

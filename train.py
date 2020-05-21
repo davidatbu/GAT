@@ -26,6 +26,7 @@ from config import GATForSeqClsfConfig
 from config import TrainConfig
 from data import load_splits
 from data import SentenceGraphDataset
+from data import SliceDataset
 from models import GATForSeqClsf
 
 # from multiprocessing import Pool
@@ -152,10 +153,14 @@ def train(
     if train_tb_writer is not None:
         X, _ = next(iter(train_loader))
         prepared_X = model.prepare_batch(X)
-        train_tb_writer.add_graph(model, (prepared_X,), verbose=True)
+        train_tb_writer.add_graph(model, (prepared_X,))
+
+    train_dataset_slice = SliceDataset(train_dataset, n=len(val_dataset))
     eval_metrics, _, _ = evaluate(model, val_dataset, train_config)
-    train_metrics, _, _ = evaluate(model, train_dataset, train_config)
-    logger.info(f"Before training | eval: {eval_metrics} | train: {train_metrics}")
+    train_metrics, _, _ = evaluate(model, train_dataset_slice, train_config)
+    logger.info(
+        f"Before training | eval: {eval_metrics} | partial train: {train_metrics}"
+    )
     for epoch in range(1, train_config.epochs + 1):
         pbar_desc = f"epoch: {epoch}"
         pbar = tqdm(train_loader, desc=pbar_desc, position=2 * tqdm_position)
@@ -167,8 +172,10 @@ def train(
 
         if train_config.do_eval_every_epoch:
             eval_metrics, _, _ = evaluate(model, val_dataset, train_config)
-            train_metrics, _, _ = evaluate(model, train_dataset, train_config)
-            logger.info(f"{pbar_desc} | eval: {eval_metrics} | train: {train_metrics}")
+            train_metrics, _, _ = evaluate(model, train_dataset_slice, train_config)
+            logger.info(
+                f"{pbar_desc} | eval: {eval_metrics} | partial train: {train_metrics}"
+            )
 
             if val_tb_writer is not None:
                 for metric, value in eval_metrics.items():

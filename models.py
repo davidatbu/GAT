@@ -1,6 +1,5 @@
 from typing import Iterator
 from typing import List
-from typing import NamedTuple
 from typing import Optional
 from typing import Tuple
 
@@ -31,6 +30,14 @@ class GATLayered(nn.Module):  # type: ignore
                 for _ in range(config.nmid_layers)
             ]
         )
+        """
+        self.lsfeed_forward_wrapper = nn.ModuleList(
+            [
+                FeedForwardWrapper(config, do_residual=do_residual)
+                for _ in range(config.nmid_layers)
+            ]
+        )
+        """
         self.last_layer = GATLayerWrapper(config, do_residual=False, concat=False)
 
     def forward(self, tcword_id: Tensor, adj: Tensor) -> Tensor:  # type: ignore

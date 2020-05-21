@@ -311,6 +311,21 @@ class VocabAndEmb(Cacheable):
         return [self.tokenize_before_unk(sent) for sent in lssent]
 
 
+class SliceDataset(Dataset):  # type: ignore
+    def __init__(self, orig_ds: Dataset, n: int) -> None:  # type: ignore
+        assert len(orig_ds) >= n
+        self.orig_ds = orig_ds
+        self.n = n
+
+    def __len__(self) -> int:
+        return self.n
+
+    def __getitem__(self, i: int) -> Any:
+        if i >= len(self):
+            raise IndexError("SliceDataset ended.")
+        return self.orig_ds[i]
+
+
 class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
     def __init__(
         self,
