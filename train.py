@@ -89,9 +89,7 @@ def tune_hparam(
 
 def main() -> None:
 
-    dataset_dir = Path(
-        "/project/llamagrp/davidat/projects/graphs/pyGAT/data/gv_2018_2_examples/"
-    )
+    dataset_dir = Path("data/SST-2_tiny")
     datasets_per_split, vocab_and_emb = load_splits(dataset_dir)
     train_dataset = datasets_per_split["train"]
     val_dataset = datasets_per_split["val"]
@@ -100,7 +98,7 @@ def main() -> None:
     model_kwargs = {"emb_init": vocab_and_emb.embs}
 
     lsparameterization: List[Dict[str, Any]] = [
-        {"name": "lr", "type": "choice", "values": [1e-2, 1e-3, 1e-4]},
+        {"name": "lr", "type": "fixed", "values": [1e-2, 1e-3, 1e-4]},
         {"name": "train_batch_size", "type": "choice", "values": [128, 64, 32, 4]},
         {"name": "eval_batch_size", "type": "fixed", "value": 64},
         {"name": "epochs", "type": "choice", "values": [15, 10, 9, 8, 7, 3]},
@@ -130,8 +128,8 @@ def train(
     val_dataset: Dataset,  # type: ignore
     data_loader_kwargs: Dict[str, Any],
     train_config: TrainConfig,
-    train_tb_writer: SummaryWriter,
-    val_tb_writer: SummaryWriter,
+    train_tb_writer: Optional[SummaryWriter] = None,
+    val_tb_writer: Optional[SummaryWriter] = None,
     tqdm_position: int = 0,
 ) -> Dict[str, Tuple[float, Optional[float]]]:
     # Model and optimizer
@@ -144,22 +142,22 @@ def train(
         **data_loader_kwargs,
     )
 
-    train_tb_writer.add_graph(model)
-
     running_loss = torch.tensor(9, dtype=torch.float)
     examples_seen = 0
     batches_seen = 0
-    train_tb_writer.add_graph(model, next(iter(train_loader)), verbose=True)
-    for epoch in tqdm(
-        range(train_config.epochs), position=2 * tqdm_position, desc="training epochs"
-    ):
-        for X, y in tqdm(
-            train_loader, desc="training batches seen", position=2 * tqdm_position + 1
-        ):
+    if train_tb_writer is not None:
+        train_tb_writer.add_graph(model, next(iter(train_loader)), verbose=True)
+    for epoch in range(train_config.epochs):
+        pbar = tqdm(
+            train_loader, desc="training batches seen", position=2 * tqdm_position
+        )
+        for X, y in pbar:
             one_step_loss = train_one_step(model, optimizer, X, y)
             examples_seen += train_config.train_batch_size
             running_loss += one_step_loss
             batches_seen += 1
+
+        # TODO: Make TB writer stuff actually work
 
         if train_config.do_eval_every_epoch:
             eval_metrics, _, _ = evaluate(model, val_dataset, train_config)
@@ -168,14 +166,18 @@ def train(
             eval_metrics.update({"avg_train_loss": (running_mean_train_loss, None)})
             logger.info("eval results: " + pformat(eval_metrics))
 
-            for metric, value in eval_metrics.items():
-                pass
+            if val_tb_writer is not None:
+                for metric, value in eval_metrics.items():
+                    val_tb_writer.add_scalar(metric, value, global_step=examples_seen)
 
     if not train_config.do_eval_every_epoch:
         eval_metrics, _, _ = evaluate(model, val_dataset, train_config)
         running_mean_train_loss = (running_loss / examples_seen).item()
         eval_metrics.update({"avg_train_loss": (running_mean_train_loss, None)})
         logger.info("eval results: " + pformat(eval_metrics))
+        if val_tb_writer is not None:
+            for metric, value in eval_metrics.items():
+                val_tb_writer.add_scalar(metric, value, global_step=examples_seen)
 
     return eval_metrics
 
@@ -202,7 +204,6 @@ def evaluate(
         for X, y in tqdm(
             val_loader, desc="validating batches seen", position=2 * tqdm_position
         ):
-            print(X, y)
             logits, one_step_loss = model(X=X, y=y)
             loss += one_step_loss
 

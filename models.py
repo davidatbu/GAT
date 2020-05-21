@@ -1,3 +1,4 @@
+from typing import Iterator
 from typing import List
 from typing import NamedTuple
 from typing import Optional
@@ -114,8 +115,13 @@ class GATForSeqClsf(GATModel):
         self.dropout = nn.Dropout(p=feat_dropout_p)
         self.crs_entrpy = nn.CrossEntropyLoss()
 
+    @staticmethod
+    def peeled_batch_yielder(batch: List[List[SentGraph]]) -> Iterator[SentGraph]:
+        for ex in batch:
+            yield ex[0]
+
     def prepare_batch_for_seq_clsf(
-        self, batch: List[SentGraph]
+        self, batch: List[List[SentGraph]]
     ) -> Tuple[List[Edge], List[EdgeType], List[List[Node]], List[int]]:
         """
          For each graph in batch
@@ -124,9 +130,17 @@ class GATForSeqClsf(GATModel):
         do super().prepare_batch()
         """
 
+        # Ensure that we are processing only one sentgraph per example
+        assert set(map(len, batch)) == {1}
+
         # Connect all the "head nodes" to a new [CLS] node
         new_batch: List[SentGraph] = []
-        for one_lsedge, one_lsedge_type, one_lsimp_node, one_nodeid2wordid in batch:
+        for (
+            one_lsedge,
+            one_lsedge_type,
+            one_lsimp_node,
+            one_nodeid2wordid,
+        ) in self.peeled_batch_yielder(batch):
             assert one_nodeid2wordid is not None
             assert self.cls_id not in one_nodeid2wordid
             new_nodeid2wordid = one_nodeid2wordid + [self.cls_id]
@@ -152,7 +166,7 @@ class GATForSeqClsf(GATModel):
 
         return self.prepare_batch(new_batch)
 
-    def forward(self, X: List[SentGraph], y: Optional[List[int]]) -> GATForSeqClsfForward:  # type: ignore
+    def forward(self, X: List[List[SentGraph]], y: Optional[List[int]]) -> GATForSeqClsfForward:  # type: ignore
         """
 
         Returns

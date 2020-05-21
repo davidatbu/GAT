@@ -27,6 +27,7 @@ from layers import GATLayerWrapper
 from models import GATForSeqClsf
 from sent2graph import SRLSentenceToGraph
 from train import evaluate
+from train import train
 from utils import flatten
 from utils import grouper
 from utils import reshape_like
@@ -35,6 +36,7 @@ from utils import SentExample
 # from train import train
 
 logger = logging.getLogger("__main__")
+logger.setLevel(logging.INFO)
 
 
 class Timer:
@@ -88,6 +90,7 @@ class BaseGat:
             nmid_layers=5,
             nhid=5,
             nheads=2,
+            nedge_type=9999999,
         )
 
 
@@ -110,8 +113,6 @@ class TestAttHead(BaseGat):
             print(pformat(loss))
             adam.step()
         print(pformat(logits.argmax(dim=1)))
-
-        pass
 
 
 class TestGATLayer(BaseGat):
@@ -197,6 +198,7 @@ class TestGATForSeqClsf:
             cls_id=self.vocab_and_emb._cls_id,
             nmid_layers=3,
             nhid=50,
+            nedge_type=4,
             nheads=6,
         )
 
@@ -208,24 +210,25 @@ class TestGATForSeqClsfBasic(TestGATForSeqClsf):
         X, y = next(iter(self.loader))
 
         # Rember vocab_and_emb._real_tokens_start
-        expected_global_lsnode = [3, 4, 5, 6, 3, 7, 5, 6]
-        expected_lsedge_index = [
+        expected_nodeid2wordid = [3, 4, 5, 6, 3, 7, 5, 6]
+        expected_lsedge = [
             (0, 1),
             (1, 2),
-            (1, 0),
-            (2, 1),
             (4, 5),
             (5, 6),
+            (1, 0),
+            (2, 1),
             (5, 4),
             (6, 5),
         ]
-        expected_lslshead_node = [[1, 3], [5, 7]]
+        expected_lslsimp_node = [[1, 3], [5, 7]]
 
-        batch = self.gat_seq_clsf.prepare_batch(X)
-        global_lsnode, lsedge_index, lslshead_node = batch
-        tools.eq_(expected_lsedge_index, lsedge_index)
-        tools.eq_(expected_global_lsnode, global_lsnode)
-        tools.eq_(expected_lslshead_node, lslshead_node)
+        peeled_X = [ex[0] for ex in X]
+        batch = self.gat_seq_clsf.prepare_batch(peeled_X)
+        lsedge, lsedge_type, lslsimp_node, nodeid2wordid = batch
+        tools.eq_(expected_lsedge, lsedge)
+        tools.eq_(expected_nodeid2wordid, nodeid2wordid)
+        tools.eq_(expected_lslsimp_node, lslsimp_node)
 
     def test_converges(self) -> None:
         gat_seq_clsf = self.gat_seq_clsf
@@ -254,32 +257,33 @@ class TestGATForSeqClsfBasic(TestGATForSeqClsf):
 class TestOverfit:
     def setUp(self) -> None:
         datasets_per_split, vocab_and_emb = load_splits(
-            Path(
-                "/project/llamagrp/davidat/projects/graphs/pyGAT/data/gv_2018_10_examples/"
-            ),
+            Path("data/SST-2_tiny"),
             splits=["train"],
+            lstxt_col=["sentence"],
+            unk_thres=1,
         )
         self.vocab_and_emb = vocab_and_emb
         self.train_dataset = datasets_per_split["train"]
 
         self.train_config = TrainConfig(
             lr=1e-3,
-            epochs=2,
+            epochs=10,
             train_batch_size=2,
-            eval_batch_size=2,
+            eval_batch_size=10,
             collate_fn=SentenceGraphDataset.collate_fn,
             do_eval_every_epoch=True,
         )
 
         model_config = GATForSeqClsfConfig(
             nclass=len(self.vocab_and_emb._id2lbl),
+            nedge_type=9999,
             vocab_size=self.vocab_and_emb.embs.size(0),
             embedding_dim=self.vocab_and_emb.embs.size(1),
             cls_id=self.vocab_and_emb._cls_id,
             nmid_layers=0,
             nhid=50,
             nheads=6,
-            feat_dropout_p=0.7,
+            feat_dropout_p=0.9,
         )
 
         self.gat_seq_clsf = GATForSeqClsf(model_config, self.vocab_and_emb.embs)
@@ -299,18 +303,16 @@ class TestOverfit:
         logger.info(f"BEFORE TRAINING: eval logits: {pformat(before_train_all_logits)}")
         logger.info(f"BEFORE TRAINING: eval y: {pformat(before_train_all_y)}")
 
-        # train(
-        # gat_seq_clsf,
-        # self.train_dataset,
-        # val_dataset=self.train_dataset,
-        # data_loader_kwargs={},
-        # train_config=train_config,
-        # )
+        gat_seq_clsf.train()
+        train(
+            gat_seq_clsf,
+            train_dataset=self.train_dataset,
+            val_dataset=self.train_dataset,
+            data_loader_kwargs={},
+            train_config=train_config,
+        )
 
     def tearDown(self) -> None:
-        pass
-
-    def test(self) -> None:
         pass
 
 
@@ -405,43 +407,5 @@ class TestSentenceGraphDataset:
         print(pformat([i for i in self.loader]))
 
 
-"""
-    def draw_networkx_graph(self, batch: List[SentGraph]) -> None:
-        import matplotlib.pyplot as plt
-        import networkx as nx  # type: ignore
-
-        lsedge_index = list(map(tuple, torch.nonzero(tcadj, as_tuple=False).tolist()))
-
-        # Create nicer names
-        node2word = {
-            i: self.vocab_and_emb._id2word[word_id]
-            for i, word_id in enumerate(lsglobal_node)
-        }
-        lsnode = list(range(len(lsglobal_node)))
-
-        lsimp_node, lslbl = zip(*lslbled_node)
-        lsnode_color: List[str] = [
-            "b" if node in lsimp_node else "y" for node in lsnode
-        ]
-
-        # Append node label to nx "node labels"
-        for imp_node, lbl in lslbled_node:
-            node2word[imp_node] += f"|label={lbl}"
-
-        G = nx.Graph()
-        G.add_nodes_from(lsnode)
-        G.add_edges_from(lsedge_index)
-        pos = nx.planar_layout(G)
-        nx.draw(
-            G,
-            pos=pos,
-            labels=node2word,
-            node_color=lsnode_color,  # node_size=1000, # size=10000,
-        )
-        plt.show()
-
-"""
-
 if __name__ == "__main__":
-    logger.setLevel(logging.INFO)
     main()

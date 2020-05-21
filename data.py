@@ -24,12 +24,10 @@ from embeddings import WordToVec
 from glove_embeddings import GloveWordToVec
 from sent2graph import SentenceToGraph
 from sent2graph import SRLSentenceToGraph
-from utils import EdgeList
 from utils import grouper
 from utils import SentExample
 from utils import SentGraph
 from utils import SentgraphExample
-from utils import to_undirected
 
 # from p_tqdm import p_map  # type: ignore
 
@@ -358,6 +356,7 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
         num_batches = (len(self.txt_src) // batch_size) + int(
             len(self.txt_src) % batch_size != 0
         )
+        self.sent2graph.init_workers()
         for lssent_ex in tqdm(
             batched_lssent_ex,
             desc=f"Predicting SRL with batch size {batch_size}",
@@ -366,6 +365,7 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
             one_batch_lssentgraph_ex = self._batch_process_sent_ex(lssent_ex)
             lssentgraph_ex.extend(one_batch_lssentgraph_ex)
 
+        self.sent2graph.finish_workers()
         self._lssentgraph_ex = lssentgraph_ex
 
     def _batch_process_sent_ex(
@@ -444,13 +444,10 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
         for i in range(len(self)):
             yield self[i]
 
-    @classmethod
-    def batch_to_undirected(cls, lslsedge_index: List[EdgeList]) -> List[EdgeList]:
-        return [to_undirected(lsedge_index) for lsedge_index in lslsedge_index]
-
     @staticmethod
-    def collate_fn(batch: List[SentgraphExample]) -> Tuple[List[SentGraph], List[int]]:
-
+    def collate_fn(
+        batch: List[SentgraphExample],
+    ) -> Tuple[List[List[SentGraph]], List[int]]:
         X, y = zip(*batch)
         return list(X), list(y)
 
@@ -462,6 +459,7 @@ def load_splits(
     lstxt_col: List[str] = ["sentence1", "sentence2"],
     lbl_col: str = "label",
     delimiter: str = "\t",
+    unk_thres: int = 2,
 ) -> Tuple[Dict[str, SentenceGraphDataset], VocabAndEmb]:
 
     txt_srcs = {
@@ -479,7 +477,7 @@ def load_splits(
         txt_src=txt_srcs["train"],
         cache_dir=dataset_dir,
         embedder=GloveWordToVec(),
-        unk_thres=2,
+        unk_thres=unk_thres,
     )
 
     split_datasets = {  # noqa:
@@ -488,7 +486,6 @@ def load_splits(
             txt_src=txt_src,
             sent2graph=SRLSentenceToGraph(),
             vocab_and_emb=vocab_and_emb,
-            ignore_cache=True,
         )
         for split, txt_src in txt_srcs.items()
     }
@@ -498,15 +495,15 @@ def load_splits(
         logger.info(f"{split}")
         for i in range(min(len(dataset), 5)):
             lssentgraph, lbl_id = dataset[i]
-            print(f"{vocab_and_emb._id2lbl[lbl_id]}")
+            logger.info(f"{vocab_and_emb._id2lbl[lbl_id]}")
             for _, _, _, lsword_id in lssentgraph:
-                print(f"\t{vocab_and_emb.batch_id2word(lsword_id)}")  # type: ignore
+                logger.info(f"\t{vocab_and_emb.batch_id2word(lsword_id)}")  # type: ignore
 
     return split_datasets, vocab_and_emb
 
 
 def main() -> None:
-    dataset_dir = Path("data/SST-2_tiny")  # noqa:
+    dataset_dir = Path("data/SST-2_small")  # noqa:
     load_splits(
         dataset_dir,
         splits=["train", "dev"],

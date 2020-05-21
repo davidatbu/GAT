@@ -10,6 +10,7 @@ from typing import Set
 from typing import Tuple
 from typing import TYPE_CHECKING
 from typing import TypeVar
+from typing import Union
 
 import torch
 from allennlp.predictors.predictor import Predictor
@@ -37,7 +38,7 @@ class PerSplit(Dict[Literal["train", "val", "test"], V]):
 
 
 if TYPE_CHECKING:
-    task_queue_t = Queue[Tuple[int, Dict[str, Any]]]
+    task_queue_t = Queue[Union[Tuple[int, Dict[str, Any]], Literal["STOP"]]]
     done_queue_t = Queue[Tuple[int, SentGraph]]
 else:
     task_queue_t = done_queue_t = Queue
@@ -55,6 +56,12 @@ class SentenceToGraph:
 
     def to_graph(self, lsword: List[str]) -> SentGraph:
         raise NotImplementedError()
+
+    def init_workers(self) -> None:
+        pass
+
+    def finish_workers(self) -> None:
+        pass
 
 
 # I'm brekaing my own laws by using globals here. an FYI for future me.
@@ -147,10 +154,12 @@ class SRLSentenceToGraph(SentenceToGraph):
         )
 
         self.use_workers = use_workers
+
+    def init_workers(self) -> None:
         self.task_queue: task_queue_t = Queue()
         self.done_queue: done_queue_t = Queue()
 
-        if use_workers:
+        if self.use_workers:
             self.num_workers = 10
             for i in range(self.num_workers):
                 Process(
@@ -171,6 +180,7 @@ class SRLSentenceToGraph(SentenceToGraph):
         if not self.use_workers:
             return [_srl_resp_to_graph(srl_resp) for srl_resp in lssrl_resp]
         else:
+            assert self.done_queue.empty()
             for i, srl_resp in enumerate(lssrl_resp):
                 self.task_queue.put((i, srl_resp))
 
@@ -179,9 +189,9 @@ class SRLSentenceToGraph(SentenceToGraph):
         _, lssentgraph = zip(*lsidx_sentgraph)
         return list(lssentgraph)
 
-    def finish(self) -> None:
+    def finish_workers(self) -> None:
         for i in range(self.num_workers):
-            self.done_queue.put("STOP")
+            self.task_queue.put("STOP")
 
     def draw_graph(self, lsword: List[str]) -> None:
         import matplotlib.pyplot as plt
@@ -251,7 +261,7 @@ def _srl_resp_to_graph(srl_resp: Dict[str, Any]) -> SentGraph:
                 cur_role = tag[2:]
                 cur_beg = i
 
-        # Typical need-one-check after the loop finishes
+        # Typical need-one-check after the loop finish_workerses
         if cur_beg is not None:
             cur_end = len(srl_desc["tags"])
             assert cur_role is not None
