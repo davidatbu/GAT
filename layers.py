@@ -2,6 +2,7 @@ import logging
 import math
 from typing import Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch import Tensor
@@ -217,12 +218,13 @@ class FeedForwardWrapper(nn.Module):  # type: ignore
         if do_layer_norm:
             w2_bias = False
 
-        self.W1 = nn.Linear(embedding_dim, embedding_dim * 4, bias=True)
+        self.W1 = nn.Linear(embedding_dim, embedding_dim // 4, bias=True)
         if concat:
             out_features = embedding_dim
         else:
-            out_features = config.nhid
-        self.W2 = nn.Linear(embedding_dim * 4, nhid, bias=w2_bias)
+            out_features = nhid
+        self.elu = nn.ELU()
+        self.W2 = nn.Linear(embedding_dim // 4, out_features, bias=w2_bias)
         self.layer_norm = nn.LayerNorm(out_features)
 
         self.do_residual = do_residual
@@ -231,7 +233,7 @@ class FeedForwardWrapper(nn.Module):  # type: ignore
 
     def forward(self, h: Tensor) -> Tensor:  # type: ignore
         h = self.dropout(h)
-        h_new = self.W2(self.W1(h))
+        h_new = self.W2(self.elu(self.W1(h)))
         if self.do_residual:
             h_new = h_new + h  # Learnt not to do += for autograd
         if self.do_layer_norm:
@@ -250,18 +252,59 @@ class EmbeddingWrapper(nn.Module):  # type: ignore
         self.embedding = nn.Embedding(
             num_embeddings=vocab_size, embedding_dim=embedding_dim, padding_idx=0
         )
+
+        self.position_embedding = PositionEmbedding(config)
+
         if emb_init is not None:
             logger.info("Initializing embeddings with pretrained embeddings ...")
             self.embedding.from_pretrained(emb_init)
         self.layer_norm = nn.LayerNorm(normalized_shape=embedding_dim)
         self.do_layer_norm = do_layer_norm
 
-    def forward(self, tcword_id: Tensor) -> Tensor:  # type: ignore
+    def forward(self, tcword_id: Tensor, position_ids: Tensor) -> Tensor:  # type: ignore
+        assert len(tcword_id) == len(position_ids)
         h = self.embedding(tcword_id)
+        h += self.position_embedding(position_ids)
 
         if self.do_layer_norm:
             h = self.layer_norm(h)
         return h
+
+
+class PositionEmbedding(nn.Module):  # type: ignore
+    def __init__(self, config: GATConfig) -> None:
+        super().__init__()
+        initial_max_length = 100
+        self.embedding_dim = config.embedding_dim
+
+        self.register_buffer(
+            "embs", self.create_embs(initial_max_length, self.embedding_dim)
+        )
+
+    @staticmethod
+    def create_embs(max_length: int, embedding_dim: int) -> Tensor:
+        embs = torch.zeros(max_length, embedding_dim)
+        position_enc = np.array(
+            [
+                [
+                    pos / np.power(10000, 2 * (j // 2) / embedding_dim)
+                    for j in range(embedding_dim)
+                ]
+                for pos in range(max_length)
+            ]
+        )
+        embs[:, 0::2] = torch.from_numpy(np.sin(position_enc[:, 0::2]))
+        embs[:, 1::2] = torch.from_numpy(np.cos(position_enc[:, 1::2]))
+        embs.detach_()
+        embs.requires_grad = False
+        return embs
+
+    def forward(self, position_ids: Tensor) -> Tensor:  # type: ignore
+        cur_max = int(position_ids.max().item())
+        if cur_max > self.embs.size(0):
+            logger.info(f"Increasing max position embedding to {cur_max}")
+            self.register_buffer("embs", self.create_embs(cur_max, self.embedding_dim))
+        return self.embs[position_ids]
 
 
 if __name__ == "__main__":

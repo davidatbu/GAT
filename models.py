@@ -11,6 +11,7 @@ from torch import Tensor
 from config import GATConfig
 from config import GATForSeqClsfConfig
 from layers import EmbeddingWrapper
+from layers import FeedForwardWrapper
 from layers import GATLayerWrapper
 from utils import Edge
 from utils import EdgeType
@@ -30,21 +31,22 @@ class GATLayered(nn.Module):  # type: ignore
                 for _ in range(config.nmid_layers)
             ]
         )
-        """
         self.lsfeed_forward_wrapper = nn.ModuleList(
             [
                 FeedForwardWrapper(config, do_residual=do_residual)
                 for _ in range(config.nmid_layers)
             ]
         )
-        """
         self.last_layer = GATLayerWrapper(config, do_residual=False, concat=False)
 
-    def forward(self, tcword_id: Tensor, adj: Tensor, edge_type: Tensor) -> Tensor:  # type: ignore
-        h = self.emb_wrapper(tcword_id)
+    def forward(self, tcword_id: Tensor, position_ids: Tensor, adj: Tensor, edge_type: Tensor) -> Tensor:  # type: ignore
+        h = self.emb_wrapper(tcword_id, position_ids)
 
-        for layer_wrapper in self.lsmid_layer_wrapper:
-            h = layer_wrapper(h, adj, edge_type)
+        for gat_layer_wrapper, feed_forward_wrapper in zip(
+            self.lsmid_layer_wrapper, self.lsfeed_forward_wrapper
+        ):
+            h = gat_layer_wrapper(h, adj, edge_type)
+            h = feed_forward_wrapper(h)
 
         h = self.last_layer(h, adj, edge_type)
 
@@ -61,7 +63,7 @@ class GATModel(nn.Module):  # type: ignore
 
     def _base_prepare_batch(
         self, batch: List[SentGraph]
-    ) -> Tuple[List[Edge], List[EdgeType], List[List[Node]], List[int]]:
+    ) -> Tuple[List[Edge], List[EdgeType], List[List[Node]], List[int], List[int]]:
         """
         Increment the relative node numbers in the adjacency list, and the list of key nodes
         """
@@ -70,6 +72,7 @@ class GATModel(nn.Module):  # type: ignore
         lsedge_type: List[EdgeType] = []
         lslsimp_node: List[List[Node]] = []
         nodeid2wordid: List[int] = []
+        lsposition_id: List[int] = []
 
         counter = 0
 
@@ -87,6 +90,9 @@ class GATModel(nn.Module):  # type: ignore
 
             # Extend lslshead node as well, but increment the numbers
             lslsimp_node.append([node + counter for node in one_lsimp_node])
+
+            # Add position ids
+            lsposition_id.extend(range(len(one_nodeid2wordid)))  # type: ignore # None
 
             # Increment node counter
             counter += len(one_nodeid2wordid)  # type: ignore
@@ -106,12 +112,7 @@ class GATModel(nn.Module):  # type: ignore
 
             lsedge = new_lsedge
             lsedge_type = new_lsedge_type
-        return (
-            lsedge,
-            lsedge_type,
-            lslsimp_node,
-            nodeid2wordid,
-        )
+        return (lsedge, lsedge_type, lslsimp_node, nodeid2wordid, lsposition_id)
 
 
 class GATForSeqClsf(GATModel):
@@ -132,7 +133,7 @@ class GATForSeqClsf(GATModel):
 
     def prepare_batch(
         self, batch: List[List[SentGraph]]
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
          For each graph in batch
             connect each key node to a new, "CLS" node
@@ -174,7 +175,13 @@ class GATForSeqClsf(GATModel):
                 )
             )
         final_pre_torch_preped_X = self._base_prepare_batch(new_batch)
-        lsedge, lsedge_type, lslsimp_node, nodeid2wordid = final_pre_torch_preped_X
+        (
+            lsedge,
+            lsedge_type,
+            lslsimp_node,
+            nodeid2wordid,
+            lsposition_id,
+        ) = final_pre_torch_preped_X
         # "unpack" lscls_node ,since per batch, we're only looking at output of CLS token
         assert set(map(len, lslsimp_node)) == {1}
 
@@ -183,6 +190,7 @@ class GATForSeqClsf(GATModel):
 
         # word ids
         word_ids = torch.tensor(nodeid2wordid, dtype=torch.long, device=device)
+        position_ids = torch.tensor(lsposition_id, dtype=torch.long, device=device)
 
         # ADjacency
         N = len(nodeid2wordid)
@@ -194,17 +202,17 @@ class GATForSeqClsf(GATModel):
         # Cls node
         cls_node = torch.tensor([lsimp_node[0] for lsimp_node in lslsimp_node])
 
-        return (word_ids, adj, edge_type, cls_node)
+        return (word_ids, position_ids, adj, edge_type, cls_node)
 
-    def forward(self, prepared_X: Tuple[Tensor, Tensor, Tensor, Tensor], y: Optional[List[int]] = None) -> Tuple[Tensor, ...]:  # type: ignore
+    def forward(self, prepared_X: Tuple[Tensor, Tensor, Tensor, Tensor, Tensor], y: Optional[List[int]] = None) -> Tuple[Tensor, ...]:  # type: ignore
         """
 
         Returns
         -------
         """
-        word_ids, adj, edge_type, cls_node = prepared_X
+        word_ids, position_ids, adj, edge_type, cls_node = prepared_X
 
-        h = self.gat_layered(word_ids, adj, edge_type)
+        h = self.gat_layered(word_ids, position_ids, adj, edge_type)
 
         cls_id_h = h[cls_node]
 

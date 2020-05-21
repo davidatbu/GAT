@@ -113,6 +113,8 @@ def main() -> None:
             "nhid": 50,
             "nheads": 6,
             "embedding_dim": 300,
+            # "edge_dropout_p": 0.1,
+            "feat_dropout_p": 0.3,
             "nclass": len(vocab_and_emb._id2lbl),
             "nmid_layers": 6,
             "nedge_type": len(train_dataset.sent2graph.id2edge_type),
@@ -162,14 +164,20 @@ def train(
     logger.info(
         f"Before training | eval: {eval_metrics} | partial train: {train_metrics}"
     )
+    running_loss = torch.tensor(
+        0, dtype=torch.float, device=next(model.parameters()).device
+    )
     for epoch in range(1, train_config.epochs + 1):
         pbar_desc = f"epoch: {epoch}"
         pbar = tqdm(train_loader, desc=pbar_desc, position=2 * tqdm_position)
         for X, y in pbar:
             prepared_X = model.prepare_batch(X)
-            train_one_step(model, optimizer, prepared_X, y)
+            running_loss += train_one_step(model, optimizer, prepared_X, y)
             examples_seen += train_config.train_batch_size
             batches_seen += 1
+            pbar.set_description(
+                f"{pbar_desc} | train loss running: {(running_loss / batches_seen).item()}"
+            )
 
         if train_config.do_eval_every_epoch:
             eval_metrics, _, _ = evaluate(model, val_dataset, train_config)
