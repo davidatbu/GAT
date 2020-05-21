@@ -1,6 +1,7 @@
 from typing import Iterator
 from typing import List
 from typing import Optional
+from typing import Set
 from typing import Tuple
 
 import torch
@@ -15,7 +16,6 @@ from utils import Edge
 from utils import EdgeType
 from utils import Node
 from utils import SentGraph
-from utils import sorted_directed
 
 
 class GATLayered(nn.Module):  # type: ignore
@@ -40,13 +40,13 @@ class GATLayered(nn.Module):  # type: ignore
         """
         self.last_layer = GATLayerWrapper(config, do_residual=False, concat=False)
 
-    def forward(self, tcword_id: Tensor, adj: Tensor) -> Tensor:  # type: ignore
+    def forward(self, tcword_id: Tensor, adj: Tensor, edge_type: Tensor) -> Tensor:  # type: ignore
         h = self.emb_wrapper(tcword_id)
 
         for layer_wrapper in self.lsmid_layer_wrapper:
-            h = layer_wrapper(h, adj)
+            h = layer_wrapper(h, adj, edge_type)
 
-        h = self.last_layer(h, adj)
+        h = self.last_layer(h, adj, edge_type)
 
         return h  # type: ignore
 
@@ -92,12 +92,20 @@ class GATModel(nn.Module):  # type: ignore
             counter += len(one_nodeid2wordid)  # type: ignore
 
         if self.undirected:
-            lsedge = sorted_directed(lsedge)
-            lsedge_inv = [(n2, n1) for n1, n2 in lsedge]
-            lsedge_type_inv = lsedge_type[:]
+            setedge: Set[Edge] = set()
+            new_lsedge: List[Edge] = []
+            new_lsedge_type: List[EdgeType] = []
 
-            lsedge = lsedge + lsedge_inv
-            lsedge_type = lsedge_type + lsedge_type_inv
+            for (n1, n2), edge_type in zip(lsedge, lsedge_type):
+                if n1 > n2:
+                    n2, n1 = n1, n2
+                if (n1, n2) not in setedge:
+                    new_lsedge.extend([(n1, n2), (n2, n1)])
+                    new_lsedge_type.extend([edge_type, edge_type])
+                    setedge.add((n1, n2))
+
+            lsedge = new_lsedge
+            lsedge_type = new_lsedge_type
         return (
             lsedge,
             lsedge_type,
@@ -124,7 +132,7 @@ class GATForSeqClsf(GATModel):
 
     def prepare_batch(
         self, batch: List[List[SentGraph]]
-    ) -> Tuple[Tensor, Tensor, Tensor]:
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         """
          For each graph in batch
             connect each key node to a new, "CLS" node
@@ -169,28 +177,34 @@ class GATForSeqClsf(GATModel):
         lsedge, lsedge_type, lslsimp_node, nodeid2wordid = final_pre_torch_preped_X
         # "unpack" lscls_node ,since per batch, we're only looking at output of CLS token
         assert set(map(len, lslsimp_node)) == {1}
-        cls_node = torch.tensor([lsimp_node[0] for lsimp_node in lslsimp_node])
 
         # Device
         device = next(self.parameters()).device
 
-        word_ids = torch.tensor(nodeid2wordid, device=device)
+        # word ids
+        word_ids = torch.tensor(nodeid2wordid, dtype=torch.long, device=device)
 
+        # ADjacency
         N = len(nodeid2wordid)
         adj: torch.Tensor = torch.zeros(N, N, dtype=torch.float, device=device)
         adj[list(zip(*lsedge))] = 1
 
-        return (word_ids, adj, cls_node)
+        # Edge types
+        edge_type: Tensor = torch.tensor(lsedge_type, dtype=torch.long, device=device)
+        # Cls node
+        cls_node = torch.tensor([lsimp_node[0] for lsimp_node in lslsimp_node])
 
-    def forward(self, prepared_X: Tuple[Tensor, Tensor, Tensor], y: Optional[List[int]] = None) -> Tuple[Tensor, ...]:  # type: ignore
+        return (word_ids, adj, edge_type, cls_node)
+
+    def forward(self, prepared_X: Tuple[Tensor, Tensor, Tensor, Tensor], y: Optional[List[int]] = None) -> Tuple[Tensor, ...]:  # type: ignore
         """
 
         Returns
         -------
         """
-        word_ids, adj, cls_node = prepared_X
+        word_ids, adj, edge_type, cls_node = prepared_X
 
-        h = self.gat_layered(word_ids, adj)
+        h = self.gat_layered(word_ids, adj, edge_type)
 
         cls_id_h = h[cls_node]
 

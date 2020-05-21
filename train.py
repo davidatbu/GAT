@@ -103,9 +103,10 @@ def main() -> None:
 
     lsparameterization: List[Dict[str, Any]] = [
         {
-            "lr": 3e-4,
-            "train_batch_size": 256,
-            "eval_batch_size": 256,
+            # "use_cuda": False,
+            "lr": 1e-3,
+            "train_batch_size": 128,
+            "eval_batch_size": 128,
             "epochs": 20,
             "vocab_size": vocab_size,
             "cls_id": vocab_and_emb._cls_id,
@@ -114,7 +115,7 @@ def main() -> None:
             "embedding_dim": 300,
             "nclass": len(vocab_and_emb._id2lbl),
             "nmid_layers": 6,
-            "nedge_type": 99999,
+            "nedge_type": len(train_dataset.sent2graph.id2edge_type),
         }
     ]
 

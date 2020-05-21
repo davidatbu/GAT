@@ -45,6 +45,9 @@ else:
 
 
 class SentenceToGraph:
+    id2edge_type: List[str]
+    edge_type2id: Dict[str, int]
+
     def __init__(self) -> None:
         pass
 
@@ -138,8 +141,8 @@ _role2id: Dict[str, int] = {role: i for i, role in enumerate(_id2role)}
 
 
 class SRLSentenceToGraph(SentenceToGraph):
-    _id2role = _id2role
-    _role2id = _role2id
+    id2edge_type = _id2role
+    edge_type2id = _role2id
 
     def __init__(self, use_workers: bool = True) -> None:
         if torch.cuda.is_available():
@@ -201,7 +204,7 @@ class SRLSentenceToGraph(SentenceToGraph):
         lsnode = list(range(len(lsword)))
         node2label = {node: word for node, word in enumerate(lsword)}
         edge2label = {
-            edge: self._id2role[edge_type]
+            edge: self.id2edge_type[edge_type]
             for edge, edge_type in zip(lsedge, lsedge_type)
         }
         lsnode_color = ["b" if i in lshead_node else "r" for i in lsnode]

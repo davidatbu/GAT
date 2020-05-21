@@ -12,7 +12,12 @@ logger = logging.getLogger("__main__")
 
 
 class DotProductAttHead(nn.Module):  # type: ignore
-    def __init__(self, config: GATConfig) -> None:
+    def __init__(
+        self,
+        config: GATConfig,
+        edge_k_embedding: nn.Embedding,
+        edge_v_embedding: nn.Embedding,
+    ) -> None:
         super().__init__()
         edge_dropout_p = config.edge_dropout_p
         embedding_dim = config.embedding_dim
@@ -26,24 +31,30 @@ class DotProductAttHead(nn.Module):  # type: ignore
             embedding_dim, nhid, bias=False
         )  # Why have bias if the layer normalization will add?
 
-        # self.a2 = torch.empty(out_features, 1, dtype=torch.float)
-        # nn.init.xavier_uniform_(
-        # self.a, gain=nn.init.calculate_gain("leaky_relu", alpha)  # type: ignore
-        # )
+        self.edge_k_embedding = edge_k_embedding
+        self.edge_v_embedding = edge_v_embedding
         self.nhid = nhid
         self.leakyrelu = nn.LeakyReLU(alpha)
         self.softmax = nn.Softmax(dim=1)
         self.edge_dropout = nn.Dropout(p=edge_dropout_p)
 
-    def forward(self, input: torch.Tensor, adj: torch.Tensor) -> torch.Tensor:  # type: ignore
+    def forward(self, input: Tensor, adj: Tensor, edge_type: Tensor) -> Tensor:  # type: ignore
 
         Q = self.W_q(input)
         K = self.W_k(input)
         V = self.W_v(input)
 
+        edge_k = self.edge_k_embedding(edge_type)
+
         att_scores = Q @ K.t()
 
+        # This is such terrible coding practice, because it's so not obvious what's going on here.
+        # adjnonzero(as_tuple=True) should hopefully be of the same length as edge_k
+        att_scores[adj.nonzero(as_tuple=True)] += edge_k.view(-1)  # type: ignore
+
         att_scores /= self.nhid
+
+        # edge_v = self.edge_v_embedding(edge_type)
 
         zero_vec = -9e15 * torch.ones_like(att_scores)
         att_scores = torch.where(adj > 0, att_scores, zero_vec)
@@ -51,6 +62,7 @@ class DotProductAttHead(nn.Module):  # type: ignore
         att_probs = self.softmax(att_scores)
 
         h_prime = att_probs @ V
+        # h_prime = att_probs @ V + edge_v
 
         return h_prime
 
@@ -88,7 +100,7 @@ class AdditiveAttHead(nn.Module):  # type: ignore
         self.softmax = nn.Softmax(dim=1)
         self.edge_dropout = nn.Dropout(p=edge_dropout_p)
 
-    def forward(self, input: torch.Tensor, adj: torch.Tensor) -> torch.Tensor:  # type: ignore
+    def forward(self, input: Tensor, adj: Tensor) -> Tensor:  # type: ignore
 
         h = self.W(input)
         N = h.size(0)
@@ -125,19 +137,30 @@ class GATLayer(nn.Module):  # type: ignore
         nhid = config.nhid
         nheads = config.nheads
         embedding_dim = config.embedding_dim
+        nedge_type = config.nedge_type
 
         if not nhid * nheads == embedding_dim:
             raise Exception("nhid * nheads != out_features")
         super(GATLayer, self).__init__()
 
+        # THe +1 is because we might add an additional edge type
+        edge_k_embedding = nn.Embedding(nedge_type + 1, 1)
+        edge_v_embedding = nn.Embedding(nedge_type + 1, nhid)
         self.attentions = nn.ModuleList(
-            [DotProductAttHead(config) for _ in range(nheads)]
+            [
+                DotProductAttHead(
+                    config,
+                    edge_k_embedding=edge_k_embedding,
+                    edge_v_embedding=edge_v_embedding,
+                )
+                for _ in range(nheads)
+            ]
         )
         self.concat = concat
         self.elu = nn.ELU()
 
-    def forward(self, h: Tensor, adj: Tensor) -> torch.Tensor:  # type: ignore
-        lsatt_res = [att(h, adj) for att in self.attentions]
+    def forward(self, h: Tensor, adj: Tensor, edge_type: Tensor) -> Tensor:  # type: ignore
+        lsatt_res = [att(h, adj, edge_type) for att in self.attentions]
         if self.concat:
             h = torch.cat(lsatt_res, dim=1)
         else:
@@ -168,9 +191,9 @@ class GATLayerWrapper(nn.Module):  # type: ignore
         self.do_residual = do_residual
         self.do_layer_norm = do_layer_norm
 
-    def forward(self, h: Tensor, adj: Tensor) -> torch.Tensor:  # type: ignore
+    def forward(self, h: Tensor, adj: Tensor, edge_type: Tensor) -> Tensor:  # type: ignore
         h = self.dropout(h)
-        h_new = self.layer(h, adj)
+        h_new = self.layer(h, adj, edge_type)
         if self.do_residual:
             h_new = h_new + h  # Learnt not to do += for autograd
         if self.do_layer_norm:
@@ -206,7 +229,7 @@ class FeedForwardWrapper(nn.Module):  # type: ignore
         self.do_layer_norm = do_layer_norm
         self.dropout = nn.Dropout(feat_dropout_p)
 
-    def forward(self, h: Tensor) -> torch.Tensor:  # type: ignore
+    def forward(self, h: Tensor) -> Tensor:  # type: ignore
         h = self.dropout(h)
         h_new = self.W2(self.W1(h))
         if self.do_residual:
@@ -218,7 +241,7 @@ class FeedForwardWrapper(nn.Module):  # type: ignore
 
 # TODO: Add positional embeddings here
 class EmbeddingWrapper(nn.Module):  # type: ignore
-    def __init__(self, config: GATConfig, emb_init: Optional[torch.Tensor]):
+    def __init__(self, config: GATConfig, emb_init: Optional[Tensor]):
         super().__init__()
         do_layer_norm = config.do_layer_norm
         vocab_size = config.vocab_size
@@ -233,7 +256,7 @@ class EmbeddingWrapper(nn.Module):  # type: ignore
         self.layer_norm = nn.LayerNorm(normalized_shape=embedding_dim)
         self.do_layer_norm = do_layer_norm
 
-    def forward(self, tcword_id: torch.Tensor) -> torch.Tensor:  # type: ignore
+    def forward(self, tcword_id: Tensor) -> Tensor:  # type: ignore
         h = self.embedding(tcword_id)
 
         if self.do_layer_norm:
