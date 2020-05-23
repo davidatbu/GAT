@@ -475,7 +475,7 @@ def load_splits(
     lbl_col: str = "label",
     delimiter: str = "\t",
     unk_thres: int = 2,
-) -> Tuple[Dict[str, SentenceGraphDataset], VocabAndEmb]:
+) -> Tuple[Dict[str, SentenceGraphDataset], Dict[str, CsvTextSource], VocabAndEmb]:
 
     txt_srcs = {
         split: CsvTextSource(
@@ -514,7 +514,7 @@ def load_splits(
             for _, _, _, lsword_id in lssentgraph:
                 logger.info(f"\t{vocab_and_emb.batch_id2word(lsword_id)}")  # type: ignore
 
-    return split_datasets, vocab_and_emb
+    return split_datasets, txt_srcs, vocab_and_emb
 
 
 def main() -> None:

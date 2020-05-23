@@ -277,6 +277,7 @@ class PositionEmbedding(nn.Module):  # type: ignore
         initial_max_length = 100
         self.embedding_dim = config.embedding_dim
 
+        self.embs: Tensor
         self.register_buffer(
             "embs", self.create_embs(initial_max_length, self.embedding_dim)
         )

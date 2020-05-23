@@ -1,53 +1,71 @@
+from argparse import Namespace
 from typing import Any
-from typing import Callable
 from typing import Dict
+from typing import Generic
 from typing import List
+from typing import Optional
 from typing import Tuple
+from typing import TypeVar
 from typing import Union
 
 
 class Config:
-    # Dirty, dirty trick of having it as a class variable,
-    # then an instance variable later.
-    _past_init_config = False
 
-    attr_names: List[str] = []
+    _attr_names: List[str] = []
 
     @classmethod
     def from_dict(
-        cls, d: Dict[str, Any], pop_used: bool = True
+        cls, d: Dict[str, Any]
     ) -> Tuple[Union["TrainConfig", "GATForSeqClsfConfig"], Dict[str, Any]]:
 
         d = d.copy()
         our_kwargs: Dict[str, Any] = {}
-        for attr_name in list(
+        for _attr_names in list(
             d.keys()
         ):  # Hopefully list() copies, cuz otherwise we'll be modifying dictwhile loping thorugh
-            if attr_name in cls.attr_names:
-                our_kwargs[attr_name] = d.pop(attr_name)
+            if _attr_names in cls._attr_names:
+                our_kwargs[_attr_names] = d.pop(_attr_names)
 
         return cls(**our_kwargs), d  # type: ignore
+
+    def __setattr__(
+        self, n: str, v: Optional[Union["Config", int, float, str]]
+    ) -> None:
+        if n not in self._attr_names:
+            raise Exception(
+                f"{n} is not a valid confiugration for {self.__class__.__name__}"
+            )
+        super().__setattr__(n, v)
+
+    def as_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {}
+        for k, v in self.__dict__:
+            if isinstance(v, Config):
+                d[k] = v.as_dict()
+            else:
+                d[k] = v
+        return d
 
 
 class TrainConfig(Config):
 
-    attr_names: List[str] = [
+    _attr_names: List[str] = [
         "lr",
         "epochs",
         "train_batch_size",
         "eval_batch_size",
         "do_eval_every_epoch",
-        "collate_fn",
         "use_cuda",
+        "dataset_dir",
     ]
 
     def __init__(
         self,
         lr: float,
         epochs: int,
+        dataset_dir: str,
         train_batch_size: int,
         eval_batch_size: int,
-        collate_fn: Callable[[Any], Any],
         use_cuda: bool = True,
         do_eval_every_epoch: bool = True,
     ):
@@ -57,12 +75,12 @@ class TrainConfig(Config):
         self.do_eval_every_epoch = do_eval_every_epoch
         self.eval_batch_size = eval_batch_size
         self.train_batch_size = train_batch_size
-        self.collate_fn = collate_fn
+        self.dataset_dir = dataset_dir
 
 
 class GATConfig(Config):
 
-    attr_names: List[str] = [
+    _attr_names: List[str] = [
         "vocab_size",
         "embedding_dim",
         "cls_id",
@@ -114,13 +132,22 @@ class GATConfig(Config):
         self.do_layer_norm = do_layer_norm
         self.undirected = undirected
 
-        self._past_init_config = True
-
 
 class GATForSeqClsfConfig(GATConfig):
 
-    attr_names: List[str] = GATConfig.attr_names + ["nclass"]
+    _attr_names: List[str] = GATConfig._attr_names + ["nclass"]
 
     def __init__(self, nclass: int, **kwargs: Any):
         super().__init__(**kwargs)
         self.nclass = nclass
+
+
+_T = TypeVar("_T")
+
+
+class EverythingConfig(Config, Generic[_T]):
+    _attr_names: List[str] = Config._attr_names + ["trainer", "model"]
+
+    def __init__(self, trainer: TrainConfig, model: _T):
+        self.trainer = trainer
+        self.model = model

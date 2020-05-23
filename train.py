@@ -1,13 +1,10 @@
 import datetime
 import logging
 import random
-from argparse import ArgumentParser
-from argparse import Namespace
 from pathlib import Path
 from pprint import pformat
 from typing import Any
 from typing import Dict
-from typing import List
 from typing import Optional
 from typing import Tuple
 
@@ -19,116 +16,70 @@ import torch.optim as optim
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
-from torch.utils.tensorboard import SummaryWriter  # type: ignore
 from tqdm import tqdm
 
+import wandb  # type: ignore
+from config import Config
+from config import EverythingConfig
 from config import GATForSeqClsfConfig
 from config import TrainConfig
 from data import load_splits
-from data import SentenceGraphDataset
 from data import SliceDataset
+from data import TextSource
+from data import VocabAndEmb
 from models import GATForSeqClsf
 
-# from multiprocessing import Pool
 
 logger = logging.getLogger("__main__")
 
-
-def parse_args() -> Namespace:
-    parser = ArgumentParser()
-
-    parser.add_argument("--exp_name", "-n", type=str, default="experiment")
-
-    args = parser.parse_args()
-
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)  # type: ignore
-
-    return args
-
-
-def tune_hparam(
-    parameterization: Dict[str, Any],
-    model_kwargs: Dict[str, Any],
-    train_dataset: Dataset,  # type: ignore
-    val_dataset: Dataset,  # type: ignore
-    base_tb_dir: Path,
-    tqdm_position: int = 0,
-) -> Dict[str, float]:
-    logger.info("About to try: " + pformat(parameterization))
-
-    # Unpack configs
-    model_config, remaining_config = GATForSeqClsfConfig.from_dict(parameterization)
-    remaining_config.update({"collate_fn": SentenceGraphDataset.collate_fn})
-    train_config, remaining_config = TrainConfig.from_dict(remaining_config)
-    assert len(remaining_config) == 0
-
-    model = GATForSeqClsf(model_config, **model_kwargs)  # type: ignore
-    if train_config.use_cuda:  # type: ignore
-        model.cuda()
-    fmted_time = datetime.datetime.now().strftime("%y%m%d.%H%M%S")
-    base_tb_dir.mkdir(exist_ok=True)
-    tb_dir = base_tb_dir / f"{fmted_time}"
-    tb_dir.mkdir(exist_ok=True)
-    train_tb_writer = SummaryWriter(str(tb_dir / "train/"))
-    val_tb_writer = SummaryWriter(str(tb_dir / "val/"))
-
-    results = train(
-        model,
-        data_loader_kwargs={},
-        train_config=train_config,  # type: ignore
-        tqdm_position=tqdm_position,
-        train_dataset=train_dataset,
-        val_dataset=val_dataset,
-        train_tb_writer=train_tb_writer,
-        val_tb_writer=val_tb_writer,
-    )
-    train_tb_writer.close()
-    val_tb_writer.close()
-    return results
+random.seed(0)
+np.random.seed(0)
+torch.manual_seed(0)  # type: ignore
 
 
 def main() -> None:
-
     dataset_dir = Path("data/glue_data/SST-2")
-    datasets_per_split, vocab_and_emb = load_splits(
-        dataset_dir, lstxt_col=["sentence"], splits=["train", "dev"]
+    val_name = "dev"
+    datasets, txt_srcs, vocab_and_emb = load_splits(
+        dataset_dir, lstxt_col=["sentence"], splits=["train", val_name]
     )
-    train_dataset = datasets_per_split["train"]
-    val_dataset = datasets_per_split["dev"]
     vocab_size = vocab_and_emb.embs.size(0)
 
-    model_kwargs = {"emb_init": vocab_and_emb.embs}
+    all_config = EverythingConfig(
+        trainer=TrainConfig(
+            lr=1e-3,
+            train_batch_size=128,
+            eval_batch_size=128,
+            epochs=20,
+            dataset_dir=str(dataset_dir),
+        ),
+        model=GATForSeqClsfConfig(
+            vocab_size=vocab_size,
+            cls_id=vocab_and_emb._cls_id,
+            nhid=50,
+            nheads=6,
+            embedding_dim=300,
+            feat_dropout_p=0.3,
+            nclass=len(vocab_and_emb._id2lbl),
+            nmid_layers=6,
+            nedge_type=len(datasets["train"].sent2graph.id2edge_type),
+        ),
+    )
 
-    lsparameterization: List[Dict[str, Any]] = [
-        {
-            # "use_cuda": False,
-            "lr": 1e-3,
-            "train_batch_size": 128,
-            "eval_batch_size": 128,
-            "epochs": 20,
-            "vocab_size": vocab_size,
-            "cls_id": vocab_and_emb._cls_id,
-            "nhid": 50,
-            "nheads": 6,
-            "embedding_dim": 300,
-            # "edge_dropout_p": 0.1,
-            "feat_dropout_p": 0.3,
-            "nclass": len(vocab_and_emb._id2lbl),
-            "nmid_layers": 6,
-            "nedge_type": len(train_dataset.sent2graph.id2edge_type),
-        }
-    ]
+    logger.info("About to try: " + pformat(all_config))
+    wandb.init(project="gat", config=all_config.as_dict())
 
-    for parameterization in lsparameterization:
-        tune_hparam(
-            parameterization,
-            model_kwargs=model_kwargs,
-            train_dataset=train_dataset,
-            val_dataset=val_dataset,
-            base_tb_dir=dataset_dir / "tb_logs",
-        )
+    model = GATForSeqClsf(all_config.model, emb_init=vocab_and_emb.embs)
+    if all_config.trainer.use_cuda:
+        model.cuda()
+
+    train(
+        model,
+        data_loader_kwargs={},
+        train_config=all_config.trainer,
+        train_dataset=datasets["train"],
+        val_dataset=datasets["val"],
+    )
 
 
 def train(
@@ -137,8 +88,7 @@ def train(
     val_dataset: Dataset,  # type: ignore
     data_loader_kwargs: Dict[str, Any],
     train_config: TrainConfig,
-    train_tb_writer: Optional[SummaryWriter] = None,
-    val_tb_writer: Optional[SummaryWriter] = None,
+    analyze_predict_kwargs: Optional[Dict[str, Any]] = None,
     tqdm_position: int = 0,
 ) -> Dict[str, float]:
     # Model and optimizer
@@ -180,7 +130,9 @@ def train(
             )
 
         if train_config.do_eval_every_epoch:
-            eval_metrics, _, _ = evaluate(model, val_dataset, train_config)
+            eval_metrics, eval_logits, eval_true = evaluate(
+                model, val_dataset, train_config
+            )
             train_metrics, _, _ = evaluate(model, train_dataset_slice, train_config)
             logger.info(
                 f"{pbar_desc} | eval: {eval_metrics} | partial train: {train_metrics}"
@@ -193,6 +145,14 @@ def train(
             if train_tb_writer is not None:
                 for metric, value in train_metrics.items():
                     train_tb_writer.add_scalar(metric, value, global_step=examples_seen)
+
+            if analyze_predict_kwargs is not None:
+                analyze_predict(
+                    logits=eval_logits,
+                    true_=eval_true,
+                    tb_writer=val_tb_writer,
+                    **analyze_predict_kwargs,
+                )
 
     if not train_config.do_eval_every_epoch:
         eval_metrics, _, _ = evaluate(model, val_dataset, train_config)
@@ -229,7 +189,7 @@ def evaluate(
             0, dtype=torch.float, device=next(model.parameters()).device
         )
         all_logits: Optional[np.ndarray] = None
-        all_y: Optional[np.ndarray] = None
+        all_true: Optional[np.ndarray] = None
         for X, y in val_loader:
             prepared_X = model.prepare_batch(X)
             logits, one_step_loss = model(prepared_X=prepared_X, y=y)
@@ -237,15 +197,15 @@ def evaluate(
 
             if all_logits is None:
                 all_logits = logits.detach().cpu().numpy()
-                all_y = np.array(y)
+                all_true = np.array(y)
             else:
                 all_logits = np.concatenate(
                     [all_logits, logits.detach().cpu().numpy()], axis=0
                 )
-                all_y = np.concatenate([all_y, np.array(y)], axis=0)
+                all_true = np.concatenate([all_true, np.array(y)], axis=0)
 
     all_preds = np.argmax(all_logits, axis=1)
-    acc: float = skmetrics.accuracy_score(all_y, all_preds)
+    acc: float = skmetrics.accuracy_score(all_true, all_preds)
     loss /= len(val_loader)
     metrics = {
         "loss": float(loss.item()),
@@ -253,8 +213,16 @@ def evaluate(
     }
 
     assert all_logits is not None
-    assert all_y is not None
-    return (metrics, all_logits, all_y)
+    assert all_true is not None
+    return (metrics, all_logits, all_true)
+
+
+def analyze_predict(logits: np.ndarray, true_: np.ndarray, tb_writer: SummaryWriter, dataset: Dataset, vocab_and_emb: VocabAndEmb, txt_src: TextSource) -> None:  # type: ignore
+    matches: np.ndarray = logits == true_
+    correct_indices = matches.nonzero()
+    incorrect_indices = (~matches).nonzero()
+
+    tb_writer.add_text()
 
 
 def train_one_step(
