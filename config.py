@@ -1,4 +1,3 @@
-from argparse import Namespace
 from typing import Any
 from typing import Dict
 from typing import Generic
@@ -39,7 +38,7 @@ class Config:
 
     def as_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {}
-        for k, v in self.__dict__:
+        for k, v in self.__dict__.items():
             if isinstance(v, Config):
                 d[k] = v.as_dict()
             else:
