@@ -67,16 +67,6 @@ class DotProductAttHead(nn.Module):  # type: ignore
 
         return h_prime
 
-    def __repr__(self) -> str:
-        return (
-            self.__class__.__name__
-            + " ("
-            + str(self.embedding_dim)
-            + " -> "
-            + str(self.out_features)
-            + ")"
-        )
-
 
 class AdditiveAttHead(nn.Module):  # type: ignore
     def __init__(self, config: GATConfig) -> None:
@@ -122,16 +112,6 @@ class AdditiveAttHead(nn.Module):  # type: ignore
 
         return h_prime
 
-    def __repr__(self) -> str:
-        return (
-            self.__class__.__name__
-            + " ("
-            + str(self.embedding_dim)
-            + " -> "
-            + str(self.out_features)
-            + ")"
-        )
-
 
 class GATLayer(nn.Module):  # type: ignore
     def __init__(self, config: GATConfig, concat: bool = True):
@@ -144,6 +124,9 @@ class GATLayer(nn.Module):  # type: ignore
             raise Exception("nhid * nheads != out_features")
         super(GATLayer, self).__init__()
 
+        out_dim = embedding_dim if concat else nhid
+
+        self.W_o = nn.Linear(out_dim, out_dim)
         # THe +1 is because we might add an additional edge type
         edge_k_embedding = nn.Embedding(nedge_type + 1, 1)
         edge_v_embedding = nn.Embedding(nedge_type + 1, nhid)
@@ -158,7 +141,7 @@ class GATLayer(nn.Module):  # type: ignore
             ]
         )
         self.concat = concat
-        self.elu = nn.ELU()
+        # self.elu = nn.ELU()
 
     def forward(self, h: Tensor, adj: Tensor, edge_type: Tensor) -> Tensor:  # type: ignore
         lsatt_res = [att(h, adj, edge_type) for att in self.attentions]
@@ -166,7 +149,8 @@ class GATLayer(nn.Module):  # type: ignore
             h = torch.cat(lsatt_res, dim=1)
         else:
             h = torch.stack(lsatt_res, dim=0).mean(dim=0)
-        h = self.elu(h)
+        h = self.W_o(h)
+        # h = self.elu(h)
         return h
 
 
