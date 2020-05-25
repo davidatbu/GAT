@@ -455,6 +455,20 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
 
         return self._lssentgraph_ex[idx]
 
+    def sentgraph_ex_to_sent_ex(self, sent_graph_ex: SentgraphExample) -> SentExample:
+        lslsword_id = [
+            sentgraph.nodeid2wordid for sentgraph in sent_graph_ex.lssentgraph
+        ]
+        lssent: List[str] = []
+        for lsword_id in lslsword_id:
+            assert lsword_id is not None
+            lssent.append(
+                " ".join(self.vocab_and_emb._id2word[word_id] for word_id in lsword_id)
+            )
+        lbl = self.vocab_and_emb._id2lbl[sent_graph_ex.lbl_id]
+
+        return SentExample(lssent=lssent, lbl=lbl)
+
     def __iter__(self,) -> Iterator[SentgraphExample]:
         for i in range(len(self)):
             yield self[i]

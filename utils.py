@@ -1,4 +1,3 @@
-from itertools import zip_longest
 from typing import Any
 from typing import Dict
 from typing import Iterable
@@ -8,6 +7,12 @@ from typing import NamedTuple
 from typing import Optional
 from typing import Tuple
 from typing import TypeVar
+from typing import Union
+
+import numpy as np
+import plotly.figure_factory as ff  # type: ignore
+from bs4 import BeautifulSoup  # type: ignore
+from bs4 import NavigableString
 
 Edge = Tuple[int, int]
 EdgeList = List[Edge]
@@ -103,3 +108,105 @@ def _reshape_like(flat: Iterator[Any], model: Any) -> Tuple[Any, int]:
         reshaped.append(child_reshaped)
 
     return reshaped, consumed
+
+
+CellContent = Union[str, int, float]
+
+
+def html_table(
+    rows: List[Tuple[CellContent, ...]],
+    headers: Tuple[CellContent, ...],
+    row_colors: List[Optional[str]] = [],
+) -> str:
+    head_sp: BeautifulSoup = BeautifulSoup("<html><table></table></html>", "lxml")
+    table_sp: BeautifulSoup = head_sp.find("table")
+
+    def append(
+        sp: BeautifulSoup,
+        tag: Optional[str] = None,
+        content: Optional[CellContent] = None,
+        style: Optional[str] = None,
+    ) -> BeautifulSoup:
+
+        if style is None:
+            attrs: Dict[str, str] = {}
+        else:
+            attrs = {"style": style}
+
+        if tag is None:
+            new_sp = NavigableString(str(content))
+        else:
+            new_sp = head_sp.new_tag(tag, **attrs)
+            if content is not None:
+                new_sp.append(str(content))
+
+        sp.append(new_sp)
+        return new_sp
+
+    header_row_sp = append(table_sp, tag="tr")
+    for hdr_cell in headers:
+        append(header_row_sp, tag="th", content=hdr_cell)
+
+    if not row_colors:
+        row_colors = [None] * len(rows)
+    for color, row in zip(row_colors, rows):
+        if color:
+            style: Optional[str] = f"color: {color}"
+        else:
+            style = None
+        row_sp = append(table_sp, tag="tr", style=style)
+        for cell in row:
+            append(row_sp, tag="td", content=cell)
+
+    return str(table_sp)
+
+
+def plotly_cm(
+    cm: np.ndarray, labels: List[str], title: str = "Confusion matrix"
+) -> Any:
+
+    # change each element of z to type string for annotations
+    scaled = cm * 100 / cm.sum()
+    z_text = [[str(y) for y in x] for x in scaled]
+
+    # set up figure
+    fig = ff.create_annotated_heatmap(
+        cm, x=labels, y=labels, annotation_text=z_text, colorscale="Viridis"
+    )
+
+    # add title
+    fig.update_layout(title_text=f"<i><b>{title}</b></i>",)
+
+    # add custom xaxis title
+    fig.add_annotation(
+        dict(
+            font=dict(color="black", size=14),
+            x=0.5,
+            y=-0.15,
+            showarrow=False,
+            text="Predicted value",
+            xref="paper",
+            yref="paper",
+        )
+    )
+
+    # add custom yaxis title
+    fig.add_annotation(
+        dict(
+            font=dict(color="black", size=14),
+            x=-0.35,
+            y=0.5,
+            showarrow=False,
+            text="Real value",
+            textangle=-90,
+            xref="paper",
+            yref="paper",
+        )
+    )
+
+    # adjust margins to make room for yaxis title
+    fig.update_layout(margin=dict(t=50, l=200))
+
+    # add colorbar
+    fig["data"][0]["showscale"] = True
+    return fig

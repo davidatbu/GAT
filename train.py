@@ -4,15 +4,18 @@ from pathlib import Path
 from pprint import pformat
 from typing import Any
 from typing import Dict
+from typing import List
 from typing import Optional
 from typing import Tuple
 from typing import TypeVar
+from typing import Union
 
 import numpy as np
 import sklearn.metrics as skmetrics
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from sklearn.metrics import confusion_matrix
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
@@ -25,8 +28,11 @@ from config import TrainConfig
 from data import load_splits
 from data import SentenceGraphDataset
 from data import SliceDataset
+from data import TextSource
 from data import VocabAndEmb
 from models import GATForSeqClsf
+from utils import html_table
+from utils import plotly_cm
 
 
 logger = logging.getLogger("__main__")
@@ -124,7 +130,7 @@ class Trainer:
                 logger.info(pformat(all_metrics))
 
                 self.analyze_predict(
-                    logits=val_logits, true_=val_true,
+                    logits=val_logits, true_=val_true, ds=val_dataset,
                 )
 
         if not self.config.do_eval_every_epoch:
@@ -141,7 +147,7 @@ class Trainer:
         logger.info(pformat(all_metrics))
 
         self.analyze_predict(
-            logits=val_logits, true_=val_true,
+            logits=val_logits, true_=val_true, ds=val_dataset,
         )
 
     def evaluate(
@@ -187,11 +193,43 @@ class Trainer:
         assert all_true is not None
         return (metrics, all_logits, all_true)
 
-    def analyze_predict(self, logits: np.ndarray, true_: np.ndarray) -> None:
-        return
-        # matches: np.ndarray = logits == true_
+    def analyze_predict(
+        self, logits: np.ndarray, true_: np.ndarray, ds: SentenceGraphDataset,
+    ) -> None:
+        preds: np.ndarray = logits.argmax(axis=1)
+        matches: np.ndarray = np.equal(preds, true_)
         # correct_indices = matches.nonzero()
         # incorrect_indices = (~matches).nonzero()
+        table_rows: List[Tuple[Union[str, float, int], ...]] = [
+            (
+                ", ".join(
+                    '"' + sent + '"'
+                    for sent in ds.sentgraph_ex_to_sent_ex(ds[i]).lssent
+                ),
+                preds[i],
+                ds[i].lbl_id,
+            )
+            for i in range(preds.shape[0])
+        ]
+        row_colors = [None if i else "red" for i in matches]
+        table_html = html_table(
+            rows=table_rows,
+            headers=("Input", "Predicted", "Gold"),
+            row_colors=row_colors,
+        )
+
+        cm = confusion_matrix(
+            true_, preds, labels=range(len(self._vocab_and_emb._id2lbl))
+        )
+        cm_plot = plotly_cm(cm, labels=self._vocab_and_emb._id2lbl)
+        wandb.log(
+            {
+                "val_preds": wandb.Html(table_html, inject=False),
+                "confusion_matrix": cm_plot,
+            }
+        )
+
+        return
 
 
 def train_one_step(
@@ -211,8 +249,9 @@ def main() -> None:
         lr=1e-3,
         train_batch_size=128,
         eval_batch_size=128,
-        epochs=20,
+        epochs=5,
         dataset_dir="data/glue_data/SST-2",
+        # dataset_dir="data/SST-2_tiny",
     )
 
     trainer = Trainer(trainer_config)

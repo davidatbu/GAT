@@ -3,6 +3,9 @@ from pathlib import Path
 from pprint import pformat
 from timeit import default_timer as timer
 from typing import Any
+from typing import List
+from typing import Tuple
+from typing import Union
 
 import torch
 import torch.nn as nn
@@ -26,10 +29,9 @@ from layers import GATLayer
 from layers import GATLayerWrapper
 from models import GATForSeqClsf
 from sent2graph import SRLSentenceToGraph
-from train import evaluate
-from train import train
 from utils import flatten
 from utils import grouper
+from utils import html_table
 from utils import reshape_like
 from utils import SentExample
 
@@ -466,6 +468,24 @@ class Test:
 
     def tearDown(self) -> None:
         pass
+
+
+class TestHtmlTable:
+    def setUp(self) -> None:
+        self.headers = ("Sentence", "Predicted", "Gold")
+        self.data: List[Tuple[Union[str, float, int], ...]] = [
+            ("I love you", 1, 1),
+            ("I hate evil", 0, 0),
+            (
+                "The best way to ruin your life is to try to save it with your own wisdom",
+                1,
+                0,
+            ),
+        ]
+        self.colors = [None, None, "red"]
+
+    def test_it(self) -> None:
+        print(html_table(self.data, self.headers, self.colors))
 
 
 if __name__ == "__main__":
