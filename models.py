@@ -1,3 +1,4 @@
+from functools import lru_cache
 from typing import Iterator
 from typing import List
 from typing import Optional
@@ -61,7 +62,7 @@ class GATModel(nn.Module):  # type: ignore
         self.undirected = config.undirected
         self.gat_layered = GATLayered(config, emb_init)
 
-    def _base_prepare_batch(
+    def _coalesce_graph(
         self, batch: List[SentGraph]
     ) -> Tuple[List[Edge], List[EdgeType], List[List[Node]], List[int], List[int]]:
         """
@@ -131,6 +132,29 @@ class GATForSeqClsf(GATModel):
         for ex in batch:
             yield ex[0]
 
+    @lru_cache(maxsize=int(1e6))
+    def connect_to_cls_node(self, sentgraph: SentGraph) -> SentGraph:
+        # Connect all the "head nodes" to a new [CLS] node
+        lsedge, lsedge_type, lsimp_node, nodeid2wordid = sentgraph
+        assert nodeid2wordid is not None
+        assert self.cls_id not in nodeid2wordid
+        new_nodeid2wordid = nodeid2wordid + [self.cls_id]
+
+        new_cls_node = len(new_nodeid2wordid) - 1
+        lshead_to_cls_edge = [(node, new_cls_node) for node in lsimp_node]
+        lshead_to_cls_edge_type = [self.head_to_cls_edge_type for _ in lsimp_node]
+        new_lsedge = lsedge + lshead_to_cls_edge
+        new_lsedge_type = lsedge_type + lshead_to_cls_edge_type
+
+        new_lsimp_node = [new_cls_node]
+
+        return SentGraph(
+            lsedge=new_lsedge,
+            lsedge_type=new_lsedge_type,
+            lsimp_node=new_lsimp_node,
+            nodeid2wordid=new_nodeid2wordid,
+        )
+
     def prepare_batch(
         self, batch: List[List[SentGraph]]
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
@@ -138,43 +162,18 @@ class GATForSeqClsf(GATModel):
          For each graph in batch
             connect each key node to a new, "CLS" node
             make that "CLS" node the only node in list of key nodes
-        do super()._base_prepare_batch()
+        do super()._coalesce_graph()
         """
 
         # Ensure that we are processing only one sentgraph per example
         assert set(map(len, batch)) == {1}
 
-        # Connect all the "head nodes" to a new [CLS] node
-        new_batch: List[SentGraph] = []
-        for (
-            one_lsedge,
-            one_lsedge_type,
-            one_lsimp_node,
-            one_nodeid2wordid,
-        ) in self.peeled_batch_yielder(batch):
-            assert one_nodeid2wordid is not None
-            assert self.cls_id not in one_nodeid2wordid
-            new_nodeid2wordid = one_nodeid2wordid + [self.cls_id]
+        new_batch: List[SentGraph] = [
+            self.connect_to_cls_node(sentgraph)
+            for sentgraph in self.peeled_batch_yielder(batch)
+        ]
 
-            new_cls_node = len(new_nodeid2wordid) - 1
-            lshead_to_cls_edge = [(node, new_cls_node) for node in one_lsimp_node]
-            lshead_to_cls_edge_type = [
-                self.head_to_cls_edge_type for _ in one_lsimp_node
-            ]
-            new_lsedge = one_lsedge + lshead_to_cls_edge
-            new_lsedge_type = one_lsedge_type + lshead_to_cls_edge_type
-
-            new_lsimp_node = [new_cls_node]
-
-            new_batch.append(
-                SentGraph(
-                    lsedge=new_lsedge,
-                    lsedge_type=new_lsedge_type,
-                    lsimp_node=new_lsimp_node,
-                    nodeid2wordid=new_nodeid2wordid,
-                )
-            )
-        final_pre_torch_preped_X = self._base_prepare_batch(new_batch)
+        final_pre_torch_preped_X = self._coalesce_graph(new_batch)
         (
             lsedge,
             lsedge_type,

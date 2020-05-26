@@ -469,6 +469,31 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
 
         return SentExample(lssent=lssent, lbl=lbl)
 
+    def sentgraph_to_svg(self, sentgraph: SentGraph) -> str:
+        import networkx as nx  # type: ignore
+
+        g = nx.DiGraph()
+
+        def quote(s: str) -> str:
+            return '"' + s.replace('"', '"') + '"'
+
+        assert sentgraph.nodeid2wordid is not None
+        # NetworkX format
+        lsnode_word: List[Tuple[int, Dict[str, str]]] = [
+            (node_id, {"label": quote(self.vocab_and_emb._id2word[word_id])})
+            for node_id, word_id in enumerate(sentgraph.nodeid2wordid)
+        ]
+
+        # Edges in nx format
+        lsedge_role: List[Tuple[int, int, Dict[str, str]]] = [
+            (n1, n2, {"label": quote(self.sent2graph.id2edge_type[edge_id])})
+            for (n1, n2), edge_id in zip(sentgraph.lsedge, sentgraph.lsedge_type)
+        ]
+        g.add_nodes_from(lsnode_word)
+        g.add_edges_from(lsedge_role)
+        p = nx.drawing.nx_pydot.to_pydot(g)
+        return p.create_svg().decode()  # type: ignore
+
     def __iter__(self,) -> Iterator[SentgraphExample]:
         for i in range(len(self)):
             yield self[i]
@@ -491,6 +516,7 @@ def load_splits(
     unk_thres: int = 2,
 ) -> Tuple[Dict[str, SentenceGraphDataset], Dict[str, CsvTextSource], VocabAndEmb]:
 
+    assert "train" in splits
     txt_srcs = {
         split: CsvTextSource(
             fp=(dataset_dir / f"{split}.{fp_ending}"),

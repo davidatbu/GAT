@@ -409,6 +409,23 @@ class TestSentenceGraphDataset:
         print(pformat([i for i in self.loader]))
 
 
+class TestPng:
+    def setUp(self) -> None:
+        datasets_per_split, _, vocab_and_emb = load_splits(
+            Path("data/glue_data/SST-2"),
+            splits=["train", "dev"],
+            lstxt_col=["sentence"],
+        )
+        self.vocab_and_emb = vocab_and_emb
+        self.dataset = datasets_per_split["dev"]
+
+    def test_png(self) -> None:
+        with open("example.png", "wb") as fb:
+            sentgraph = self.dataset[2].lssentgraph[0]
+            png_bytes = self.dataset.sentgraph_to_png(sentgraph)
+            fb.write(png_bytes)
+
+
 class Test:
     def setUp(self) -> None:
         datasets_per_split, vocab_and_emb = load_splits(

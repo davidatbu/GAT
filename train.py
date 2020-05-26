@@ -8,7 +8,6 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 from typing import TypeVar
-from typing import Union
 
 import numpy as np
 import sklearn.metrics as skmetrics
@@ -31,8 +30,12 @@ from data import SliceDataset
 from data import TextSource
 from data import VocabAndEmb
 from models import GATForSeqClsf
+from utils import Cell
 from utils import html_table
+from utils import NumCell
 from utils import plotly_cm
+from utils import SvgCell
+from utils import TextCell
 
 
 logger = logging.getLogger("__main__")
@@ -129,10 +132,6 @@ class Trainer:
                 wandb.log(all_metrics, step=examples_seen)
                 logger.info(pformat(all_metrics))
 
-                self.analyze_predict(
-                    logits=val_logits, true_=val_true, ds=val_dataset,
-                )
-
         if not self.config.do_eval_every_epoch:
             val_metrics, val_logits, val_true = self.evaluate(model, val_dataset)
             train_metrics, _, _ = self.evaluate(model, train_dataset_slice)
@@ -147,7 +146,10 @@ class Trainer:
         logger.info(pformat(all_metrics))
 
         self.analyze_predict(
-            logits=val_logits, true_=val_true, ds=val_dataset,
+            logits=val_logits,
+            true_=val_true,
+            ds=val_dataset,
+            txt_src=self._txt_srcs[self._val_name],
         )
 
     def evaluate(
@@ -194,27 +196,30 @@ class Trainer:
         return (metrics, all_logits, all_true)
 
     def analyze_predict(
-        self, logits: np.ndarray, true_: np.ndarray, ds: SentenceGraphDataset,
+        self,
+        logits: np.ndarray,
+        true_: np.ndarray,
+        txt_src: TextSource,
+        ds: SentenceGraphDataset,
     ) -> None:
         preds: np.ndarray = logits.argmax(axis=1)
         matches: np.ndarray = np.equal(preds, true_)
-        # correct_indices = matches.nonzero()
-        # incorrect_indices = (~matches).nonzero()
-        table_rows: List[Tuple[Union[str, float, int], ...]] = [
+        table_rows: List[Tuple[Cell, ...]] = [
             (
-                ", ".join(
-                    '"' + sent + '"'
-                    for sent in ds.sentgraph_ex_to_sent_ex(ds[i]).lssent
-                ),
-                preds[i],
-                ds[i].lbl_id,
+                TextCell(txt_src[i].lssent[0]),
+                SvgCell(ds.sentgraph_to_svg(ds[i].lssentgraph[0])),
+                NumCell(preds[i]),
+                NumCell(ds[i].lbl_id),
             )
             for i in range(preds.shape[0])
         ]
         row_colors = [None if i else "red" for i in matches]
         table_html = html_table(
             rows=table_rows,
-            headers=("Input", "Predicted", "Gold"),
+            headers=tuple(
+                TextCell(i)
+                for i in ["Original", "Tokenized Parse", "Predicted", "Gold"]
+            ),
             row_colors=row_colors,
         )
 
@@ -228,8 +233,6 @@ class Trainer:
                 "confusion_matrix": cm_plot,
             }
         )
-
-        return
 
 
 def train_one_step(
@@ -271,7 +274,7 @@ def main() -> None:
     all_config = EverythingConfig(trainer=trainer_config, model=model_config)
     logger.info("About to try: " + pformat(all_config))
 
-    model = GATForSeqClsf(all_config.model, emb_init=trainer.vocab_and_emb.embs)
+    model = GATForSeqClsf(all_config.model, emb_init=None)
     wandb.init(project="gat", config=all_config.as_dict())
 
     trainer.train(model)

@@ -1,3 +1,4 @@
+import base64
 from typing import Any
 from typing import Dict
 from typing import Iterable
@@ -11,7 +12,7 @@ from typing import Union
 
 import numpy as np
 import plotly.figure_factory as ff  # type: ignore
-from bs4 import BeautifulSoup  # type: ignore
+from bs4 import BeautifulSoup as BS  # type: ignore
 from bs4 import NavigableString
 
 Edge = Tuple[int, int]
@@ -28,6 +29,20 @@ class SentGraph(NamedTuple):
     lsedge_type: EdgeTypeList
     lsimp_node: NodeList
     nodeid2wordid: Optional[List[int]]
+
+    def __hash__(self) -> int:
+        """Needed to use as a key in lru_cache"""
+        nodeid2wordid = self.nodeid2wordid
+        if nodeid2wordid is None:
+            nodeid2wordid = []
+        to_hash: List[List[Any]] = [
+            self.lsedge,
+            self.lsedge_type,
+            self.lsimp_node,
+            nodeid2wordid,
+        ]
+
+        return hash(tuple(tuple(ls) for ls in to_hash))
 
 
 class SentExample(NamedTuple):
@@ -110,53 +125,86 @@ def _reshape_like(flat: Iterator[Any], model: Any) -> Tuple[Any, int]:
     return reshaped, consumed
 
 
-CellContent = Union[str, int, float]
+class Cell:
+    def __init__(self) -> None:
+        pass
+
+    def sp(self, root_sp: BS) -> BS:
+        raise NotImplementedError()
+
+
+class TextCell(Cell):
+    def __init__(self, content: str):
+        self._content = content
+
+    def sp(self, root_sp: BS) -> BS:
+        return NavigableString(self._content)
+
+
+class NumCell(Cell):
+    def __init__(self, content: Union[int, float]):
+        self._content = content
+
+    def sp(self, root_sp: BS) -> BS:
+        return NavigableString(str(self._content))
+
+
+class PngCell(Cell):
+    def __init__(self, content: bytes):
+        self._content = content
+
+    def sp(self, root_sp: BS) -> BS:
+        encoded = base64.encodebytes(self._content).decode()
+        img_sp = root_sp.new_tag(
+            "img", src=f"data:image/png;base64,{encoded}", width="900px"
+        )
+        return img_sp
+
+
+class SvgCell(Cell):
+    def __init__(self, content: str):
+        self._content = content
+
+    def sp(self, root_sp: BS) -> BS:
+        svg_doc_sp = BS(self._content)
+        svg_sp = svg_doc_sp.find("svg")
+        svg_sp["style"] = "width: 700px"
+        for attr in ["width", "height"]:
+            if attr in svg_sp.attrs:
+                del svg_sp.attrs[attr]
+        return svg_sp
 
 
 def html_table(
-    rows: List[Tuple[CellContent, ...]],
-    headers: Tuple[CellContent, ...],
+    rows: List[Tuple[Cell, ...]],
+    headers: Tuple[Cell, ...],
     row_colors: List[Optional[str]] = [],
 ) -> str:
-    head_sp: BeautifulSoup = BeautifulSoup("<html><table></table></html>", "lxml")
-    table_sp: BeautifulSoup = head_sp.find("table")
+    root_sp: BS = BS("<html><table></table></html>", "lxml")
+    table_sp: BS = root_sp.find("table")
 
-    def append(
-        sp: BeautifulSoup,
-        tag: Optional[str] = None,
-        content: Optional[CellContent] = None,
-        style: Optional[str] = None,
-    ) -> BeautifulSoup:
+    header_row_sp = root_sp.new_tag("tr")
+    table_sp.append(header_row_sp)
 
-        if style is None:
-            attrs: Dict[str, str] = {}
-        else:
-            attrs = {"style": style}
-
-        if tag is None:
-            new_sp = NavigableString(str(content))
-        else:
-            new_sp = head_sp.new_tag(tag, **attrs)
-            if content is not None:
-                new_sp.append(str(content))
-
-        sp.append(new_sp)
-        return new_sp
-
-    header_row_sp = append(table_sp, tag="tr")
     for hdr_cell in headers:
-        append(header_row_sp, tag="th", content=hdr_cell)
+        th_sp = root_sp.new_tag("th")
+        th_sp.append(hdr_cell.sp(root_sp))
+        header_row_sp.append(th_sp)
 
     if not row_colors:
         row_colors = [None] * len(rows)
     for color, row in zip(row_colors, rows):
         if color:
-            style: Optional[str] = f"color: {color}"
+            attrs: Dict[str, str] = {"style": f"color: {color}"}
         else:
-            style = None
-        row_sp = append(table_sp, tag="tr", style=style)
+            attrs = {}
+
+        row_sp = root_sp.new_tag("tr", attrs=attrs)
+        table_sp.append(row_sp)
         for cell in row:
-            append(row_sp, tag="td", content=cell)
+            td_sp = root_sp.new_tag("td")
+            td_sp.append(cell.sp(root_sp))
+            row_sp.append(td_sp)
 
     return str(table_sp)
 
