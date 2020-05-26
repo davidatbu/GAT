@@ -20,16 +20,15 @@ from tqdm import tqdm
 from typing_extensions import Counter
 from typing_extensions import Literal
 
-from embeddings import WordToVec
-from glove_embeddings import GloveWordToVec
-from sent2graph import SentenceToGraph
-from sent2graph import SRLSentenceToGraph
-from utils import grouper
-from utils import SentExample
-from utils import SentGraph
-from utils import SentgraphExample
+from ..embeddings.base import WordToVec
+from ..embeddings.glove import GloveWordToVec
+from ..sent2graph.base import SentenceToGraph
+from ..sent2graph.srl import SRLSentenceToGraph
+from ..utils.base import grouper
+from ..utils.base import SentExample
+from ..utils.base import SentGraph
+from ..utils.base import SentgraphExample
 
-# from p_tqdm import p_map  # type: ignore
 
 logger = logging.getLogger("__main__")
 
@@ -469,6 +468,10 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
 
         return SentExample(lssent=lssent, lbl=lbl)
 
+    def __iter__(self,) -> Iterator[SentgraphExample]:
+        for i in range(len(self)):
+            yield self[i]
+
     def sentgraph_to_svg(self, sentgraph: SentGraph) -> str:
         import networkx as nx  # type: ignore
 
@@ -493,10 +496,6 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
         g.add_edges_from(lsedge_role)
         p = nx.drawing.nx_pydot.to_pydot(g)
         return p.create_svg().decode()  # type: ignore
-
-    def __iter__(self,) -> Iterator[SentgraphExample]:
-        for i in range(len(self)):
-            yield self[i]
 
     @staticmethod
     def collate_fn(
@@ -541,6 +540,7 @@ def load_splits(
             txt_src=txt_src,
             sent2graph=SRLSentenceToGraph(),
             vocab_and_emb=vocab_and_emb,
+            processing_batch_size=1000,
         )
         for split, txt_src in txt_srcs.items()
     }

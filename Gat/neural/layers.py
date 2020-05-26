@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from config import GATConfig
+from ..config.base import GATConfig
 
 logger = logging.getLogger("__main__")
 

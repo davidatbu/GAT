@@ -4,7 +4,7 @@ from typing import List
 
 import torch
 
-from embeddings import TextBasedWordToVec
+from .base import TextBasedWordToVec
 
 GLOVE_F = Path(
     "/projectnb/llamagrp/davidat/pretrained_models/glove_6b/glove.6B.300d.txt"

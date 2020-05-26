@@ -15,12 +15,12 @@ import torch
 from allennlp.predictors.predictor import Predictor
 from typing_extensions import Literal
 
-from sent2graph import SentenceToGraph
-from utils import Edge
-from utils import EdgeType
-from utils import Node
-from utils import SentGraph
-from utils import Slice
+from ..utils.base import Edge
+from ..utils.base import EdgeType
+from ..utils.base import Node
+from ..utils.base import SentGraph
+from ..utils.base import Slice
+from .base import SentenceToGraph
 
 logger = logging.getLogger("__main__")
 
@@ -104,8 +104,13 @@ _role2id: Dict[str, int] = {role: i for i, role in enumerate(_id2role)}
 
 
 class SRLSentenceToGraph(SentenceToGraph):
-    id2edge_type = _id2role
-    edge_type2id = _role2id
+    @property
+    def id2edge_type(self) -> List[str]:
+        return _id2role
+
+    @property
+    def edge_type2id(self) -> Dict[str, int]:
+        return _role2id
 
     def __init__(self, use_workers: bool = True) -> None:
         if torch.cuda.is_available():
@@ -126,7 +131,7 @@ class SRLSentenceToGraph(SentenceToGraph):
         self.done_queue: done_queue_t = Queue()
 
         if self.use_workers:
-            self.num_workers = 10
+            self.num_workers = 30
             for i in range(self.num_workers):
                 Process(
                     target=_srl_resp_to_graph_worker,

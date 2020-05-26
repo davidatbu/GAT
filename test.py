@@ -9,12 +9,6 @@ from typing import Union
 
 import torch
 import torch.nn as nn
-from nose import main
-from nose import tools
-from torch import Tensor
-from torch import testing
-from torch.utils.data import DataLoader
-
 from block import block_diag
 from config import GATConfig
 from config import GATForSeqClsfConfig
@@ -28,7 +22,12 @@ from layers import DotProductAttHead
 from layers import GATLayer
 from layers import GATLayerWrapper
 from models import GATForSeqClsf
+from nose import main
+from nose import tools
 from sent2graph import SRLSentenceToGraph
+from torch import Tensor
+from torch import testing
+from torch.utils.data import DataLoader
 from utils import flatten
 from utils import grouper
 from utils import html_table
@@ -407,23 +406,6 @@ class TestSentenceGraphDataset:
 
     def test_loader(self) -> None:
         print(pformat([i for i in self.loader]))
-
-
-class TestPng:
-    def setUp(self) -> None:
-        datasets_per_split, _, vocab_and_emb = load_splits(
-            Path("data/glue_data/SST-2"),
-            splits=["train", "dev"],
-            lstxt_col=["sentence"],
-        )
-        self.vocab_and_emb = vocab_and_emb
-        self.dataset = datasets_per_split["dev"]
-
-    def test_png(self) -> None:
-        with open("example.png", "wb") as fb:
-            sentgraph = self.dataset[2].lssentgraph[0]
-            png_bytes = self.dataset.sentgraph_to_png(sentgraph)
-            fb.write(png_bytes)
 
 
 class Test:

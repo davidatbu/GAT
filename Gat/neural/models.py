@@ -9,15 +9,15 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from config import GATConfig
-from config import GATForSeqClsfConfig
-from layers import EmbeddingWrapper
-from layers import FeedForwardWrapper
-from layers import GATLayerWrapper
-from utils import Edge
-from utils import EdgeType
-from utils import Node
-from utils import SentGraph
+from ..config.base import GATConfig
+from ..config.base import GATForSeqClsfConfig
+from ..utils.base import Edge
+from ..utils.base import EdgeType
+from ..utils.base import Node
+from ..utils.base import SentGraph
+from .layers import EmbeddingWrapper
+from .layers import FeedForwardWrapper
+from .layers import GATLayerWrapper
 
 
 class GATLayered(nn.Module):  # type: ignore
@@ -79,7 +79,7 @@ class GATModel(nn.Module):  # type: ignore
 
         for one_lsedge, one_lsedge_type, one_lsimp_node, one_nodeid2wordid in batch:
             # Extend nodeid2wordid
-            nodeid2wordid.extend(one_nodeid2wordid)  # type: ignore # None
+            nodeid2wordid.extend(one_nodeid2wordid)
 
             # Extend edge index, but increment the numbers
             lsedge.extend(
@@ -93,10 +93,10 @@ class GATModel(nn.Module):  # type: ignore
             lslsimp_node.append([node + counter for node in one_lsimp_node])
 
             # Add position ids
-            lsposition_id.extend(range(len(one_nodeid2wordid)))  # type: ignore # None
+            lsposition_id.extend(range(len(one_nodeid2wordid)))
 
             # Increment node counter
-            counter += len(one_nodeid2wordid)  # type: ignore
+            counter += len(one_nodeid2wordid)
 
         if self.undirected:
             setedge: Set[Edge] = set()

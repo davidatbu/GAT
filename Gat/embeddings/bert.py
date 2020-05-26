@@ -8,7 +8,7 @@ from transformers import AutoConfig
 from transformers import AutoModel
 from transformers import AutoTokenizer
 
-from embeddings import ContextualWordToVec
+from .base import ContextualWordToVec
 
 logging.basicConfig()
 logger = logging.getLogger("embeddings")

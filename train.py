@@ -14,28 +14,28 @@ import sklearn.metrics as skmetrics
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import wandb  # type: ignore
 from sklearn.metrics import confusion_matrix
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-import wandb  # type: ignore
-from config import EverythingConfig
-from config import GATForSeqClsfConfig
-from config import TrainConfig
-from data import load_splits
-from data import SentenceGraphDataset
-from data import SliceDataset
-from data import TextSource
-from data import VocabAndEmb
-from models import GATForSeqClsf
-from utils import Cell
-from utils import html_table
-from utils import NumCell
-from utils import plotly_cm
-from utils import SvgCell
-from utils import TextCell
+from Gat.config.base import EverythingConfig
+from Gat.config.base import GATForSeqClsfConfig
+from Gat.config.base import TrainConfig
+from Gat.data.base import load_splits
+from Gat.data.base import SentenceGraphDataset
+from Gat.data.base import SliceDataset
+from Gat.data.base import TextSource
+from Gat.data.base import VocabAndEmb
+from Gat.neural.models import GATForSeqClsf
+from Gat.utils.base import Cell
+from Gat.utils.base import html_table
+from Gat.utils.base import NumCell
+from Gat.utils.base import plotly_cm
+from Gat.utils.base import SvgCell
+from Gat.utils.base import TextCell
 
 
 logger = logging.getLogger("__main__")
@@ -252,9 +252,9 @@ def main() -> None:
         lr=1e-3,
         train_batch_size=128,
         eval_batch_size=128,
-        epochs=5,
-        dataset_dir="data/glue_data/SST-2",
-        # dataset_dir="data/SST-2_tiny",
+        epochs=1,
+        # dataset_dir="actual_data/glue_data/SST-2",
+        dataset_dir="actual_data/SST-2_tiny",
     )
 
     trainer = Trainer(trainer_config)
@@ -275,7 +275,7 @@ def main() -> None:
     logger.info("About to try: " + pformat(all_config))
 
     model = GATForSeqClsf(all_config.model, emb_init=None)
-    wandb.init(project="gat", config=all_config.as_dict())
+    wandb.init(project="gat", config=all_config.as_dict(), dir="./wandb_runs")
 
     trainer.train(model)
 
