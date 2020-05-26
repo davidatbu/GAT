@@ -9,63 +9,26 @@ from typing import Optional
 from typing import Set
 from typing import Tuple
 from typing import TYPE_CHECKING
-from typing import TypeVar
 from typing import Union
 
 import torch
 from allennlp.predictors.predictor import Predictor
 from typing_extensions import Literal
 
+from sent2graph import SentenceToGraph
 from utils import Edge
 from utils import EdgeType
 from utils import Node
 from utils import SentGraph
 from utils import Slice
 
-
-logging.basicConfig()
 logger = logging.getLogger("__main__")
-
-
-V = TypeVar("V")
-
-
-class PerSplit(Dict[Literal["train", "val", "test"], V]):
-    def __setitem__(self, k: Literal["train", "val", "test"], v: V) -> None:
-        if k not in ["train", "val", "test"]:
-            raise Exception("Nope.")
-        super().__setitem__(k, v)
-
 
 if TYPE_CHECKING:
     task_queue_t = Queue[Tuple[int, Union[Dict[str, Any], Literal["STOP"]]]]
     done_queue_t = Queue[Tuple[int, SentGraph]]
 else:
     task_queue_t = done_queue_t = Queue
-
-
-class SentenceToGraph:
-    id2edge_type: List[str]
-    edge_type2id: Dict[str, int]
-
-    def __init__(self) -> None:
-        pass
-
-    def __repr__(self) -> str:
-        raise NotImplementedError()
-
-    def batch_to_graph(self, lslsword: List[List[str]]) -> List[SentGraph]:
-        return [self.to_graph(lsword) for lsword in lslsword]
-
-    def to_graph(self, lsword: List[str]) -> SentGraph:
-        raise NotImplementedError()
-
-    def init_workers(self) -> None:
-        pass
-
-    def finish_workers(self) -> None:
-        pass
-
 
 # I'm brekaing my own laws by using globals here. an FYI for future me.
 _id2role: List[str] = [
