@@ -1,3 +1,6 @@
+# Waandb
+wandb_runs/
+
 # Vim
 *.swp
 *.swo
