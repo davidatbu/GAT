@@ -22,12 +22,10 @@ class DotProductAttHead(nn.Module):  # type: ignore
         super().__init__()
         edge_dropout_p = config.edge_dropout_p
         embedding_dim = config.embedding_dim
-        alpha = config.alpha
         nhid = config.nhid
 
         self.W_q = nn.Linear(embedding_dim, nhid)
         self.W_k = nn.Linear(embedding_dim, nhid)
-
         self.W_v = nn.Linear(
             embedding_dim, nhid, bias=False
         )  # Why have bias if the layer normalization will add?
@@ -35,11 +33,10 @@ class DotProductAttHead(nn.Module):  # type: ignore
         self.edge_k_embedding = edge_k_embedding
         self.edge_v_embedding = edge_v_embedding
         self.nhid = nhid
-        self.leakyrelu = nn.LeakyReLU(alpha)
         self.softmax = nn.Softmax(dim=1)
         self.edge_dropout = nn.Dropout(p=edge_dropout_p)
 
-    def forward(self, input: Tensor, adj: Tensor, edge_type: Tensor) -> Tensor:  # type: ignore
+    def forward(self, input: Tensor, adj: Tensor, edge_type: Tensor) -> Tensor:
 
         Q = self.W_q(input)
         K = self.W_k(input)
@@ -55,60 +52,12 @@ class DotProductAttHead(nn.Module):  # type: ignore
 
         att_scores /= self.nhid
 
-        # edge_v = self.edge_v_embedding(edge_type)
-
         zero_vec = -9e15 * torch.ones_like(att_scores)
         att_scores = torch.where(adj > 0, att_scores, zero_vec)
         att_scores /= math.sqrt(self.nhid)
         att_probs = self.softmax(att_scores)
 
         h_prime = att_probs @ V
-        # h_prime = att_probs @ V + edge_v
-
-        return h_prime
-
-
-class AdditiveAttHead(nn.Module):  # type: ignore
-    def __init__(self, config: GATConfig) -> None:
-        super().__init__()
-        edge_dropout_p = config.edge_dropout_p
-        embedding_dim = config.embedding_dim
-        alpha = config.alpha
-        nhid = config.nhid
-
-        self.W = nn.Linear(embedding_dim, nhid, bias=False)
-
-        self.a = nn.Parameter(torch.zeros(2 * nhid, 1, dtype=torch.float))  # type: ignore
-        nn.init.xavier_uniform_(
-            self.a, gain=nn.init.calculate_gain("leaky_relu", alpha)  # type: ignore
-        )
-        # self.a2 = torch.empty(out_features, 1, dtype=torch.float)
-        # nn.init.xavier_uniform_(
-        # self.a, gain=nn.init.calculate_gain("leaky_relu", alpha)  # type: ignore
-        # )
-        self.nhid = nhid
-        self.leakyrelu = nn.LeakyReLU(alpha)
-        self.softmax = nn.Softmax(dim=1)
-        self.edge_dropout = nn.Dropout(p=edge_dropout_p)
-
-    def forward(self, input: Tensor, adj: Tensor) -> Tensor:  # type: ignore
-
-        h = self.W(input)
-        N = h.size(0)
-
-        a_input = torch.cat(
-            [h.repeat(1, N).view(N * N, -1), h.repeat(N, 1)], dim=1
-        ).view(N, -1, 2 * self.nhid)
-        e = self.leakyrelu(torch.matmul(a_input, self.a).squeeze(2))
-        # f_1 = h @ self.a1
-        # f_2 = h @ self.a2
-        # e = self.leakyrelu(f_1 + f_2.transpose(0, 1))
-
-        zero_vec = -9e15 * torch.ones_like(e)
-        attention = torch.where(adj > 0, e, zero_vec)
-        attention = self.softmax(attention)
-        attention = self.edge_dropout(attention)
-        h_prime = torch.matmul(attention, h)
 
         return h_prime
 
@@ -124,9 +73,10 @@ class GATLayer(nn.Module):  # type: ignore
             raise Exception("nhid * nheads != out_features")
         super(GATLayer, self).__init__()
 
-        # out_dim = embedding_dim if concat else nhid
+        out_dim = embedding_dim if concat else nhid
 
-        # self.W_o = nn.Linear(out_dim, out_dim)
+        self.W_o = nn.Linear(out_dim, out_dim)
+
         # THe +1 is because we might add an additional edge type
         edge_k_embedding = nn.Embedding(nedge_type + 1, 1)
         edge_v_embedding = nn.Embedding(nedge_type + 1, nhid)
@@ -141,16 +91,14 @@ class GATLayer(nn.Module):  # type: ignore
             ]
         )
         self.concat = concat
-        # self.elu = nn.ELU()
 
-    def forward(self, h: Tensor, adj: Tensor, edge_type: Tensor) -> Tensor:  # type: ignore
+    def forward(self, h: Tensor, adj: Tensor, edge_type: Tensor) -> Tensor:
         lsatt_res = [att(h, adj, edge_type) for att in self.attentions]
         if self.concat:
             h = torch.cat(lsatt_res, dim=1)
         else:
             h = torch.stack(lsatt_res, dim=0).mean(dim=0)
-        # h = self.W_o(h)
-        # h = self.elu(h)
+        h = self.W_o(h)
         return h
 
 
@@ -176,7 +124,7 @@ class GATLayerWrapper(nn.Module):  # type: ignore
         self.do_residual = do_residual
         self.do_layer_norm = do_layer_norm
 
-    def forward(self, h: Tensor, adj: Tensor, edge_type: Tensor) -> Tensor:  # type: ignore
+    def forward(self, h: Tensor, adj: Tensor, edge_type: Tensor) -> Tensor:
         h = self.dropout(h)
         h_new = self.layer(h, adj, edge_type)
         if self.do_residual:
@@ -207,7 +155,7 @@ class FeedForwardWrapper(nn.Module):  # type: ignore
             out_features = embedding_dim
         else:
             out_features = nhid
-        self.elu = nn.ELU()
+        self.relu = nn.ReLU()
         self.W2 = nn.Linear(embedding_dim // 4, out_features, bias=w2_bias)
         self.layer_norm = nn.LayerNorm(out_features)
 
@@ -215,9 +163,9 @@ class FeedForwardWrapper(nn.Module):  # type: ignore
         self.do_layer_norm = do_layer_norm
         self.dropout = nn.Dropout(feat_dropout_p)
 
-    def forward(self, h: Tensor) -> Tensor:  # type: ignore
+    def forward(self, h: Tensor) -> Tensor:
         h = self.dropout(h)
-        h_new = self.W2(self.elu(self.W1(h)))
+        h_new = self.W2(self.relu(self.W1(h)))
         if self.do_residual:
             h_new = h_new + h  # Learnt not to do += for autograd
         if self.do_layer_norm:
@@ -245,10 +193,10 @@ class EmbeddingWrapper(nn.Module):  # type: ignore
         self.layer_norm = nn.LayerNorm(normalized_shape=embedding_dim)
         self.do_layer_norm = do_layer_norm
 
-    def forward(self, tcword_id: Tensor, position_ids: Tensor) -> Tensor:  # type: ignore
+    def forward(self, tcword_id: Tensor, position_ids: Tensor) -> Tensor:
         assert len(tcword_id) == len(position_ids)
         h = self.embedding(tcword_id)
-        h += self.position_embedding(position_ids)
+        h = h + self.position_embedding(position_ids)
 
         if self.do_layer_norm:
             h = self.layer_norm(h)
@@ -284,7 +232,7 @@ class PositionEmbedding(nn.Module):  # type: ignore
         embs.requires_grad = False
         return embs
 
-    def forward(self, position_ids: Tensor) -> Tensor:  # type: ignore
+    def forward(self, position_ids: Tensor) -> Tensor:
         cur_max = int(position_ids.max().item())
         if cur_max > self.embs.size(0):
             logger.info(f"Increasing max position embedding to {cur_max}")
