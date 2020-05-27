@@ -100,6 +100,7 @@ class GATConfig(Config):
         "undirected",
         "do_layer_norm",
         "nedge_type",
+        "rezero",
     ]
 
     def __init__(
@@ -119,6 +120,7 @@ class GATConfig(Config):
         do_residual: bool = True,
         do_layer_norm: bool = True,
         undirected: bool = True,
+        rezero: bool = True,
     ):
         self.vocab_size = vocab_size
         self.embedding_dim = embedding_dim
@@ -135,6 +137,7 @@ class GATConfig(Config):
         self.do_residual = do_residual
         self.do_layer_norm = do_layer_norm
         self.undirected = undirected
+        self.rezero = rezero
 
 
 class GATForSeqClsfConfig(GATConfig):

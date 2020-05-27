@@ -24,21 +24,14 @@ class GATLayered(nn.Module):  # type: ignore
     def __init__(self, config: GATConfig, emb_init: Optional[Tensor]):
         super().__init__()
 
-        do_residual = config.do_residual
         self.emb_wrapper = EmbeddingWrapper(config, emb_init)
         self.lsmid_layer_wrapper = nn.ModuleList(
-            [
-                GATLayerWrapper(config, do_residual=do_residual)
-                for _ in range(config.nmid_layers)
-            ]
+            [GATLayerWrapper(config) for _ in range(config.nmid_layers)]
         )
         self.lsfeed_forward_wrapper = nn.ModuleList(
-            [
-                FeedForwardWrapper(config, do_residual=do_residual)
-                for _ in range(config.nmid_layers)
-            ]
+            [FeedForwardWrapper(config) for _ in range(config.nmid_layers)]
         )
-        self.last_layer = GATLayerWrapper(config, do_residual=False, concat=False)
+        self.last_layer = GATLayerWrapper(config)
 
     def forward(
         self, tcword_id: Tensor, position_ids: Tensor, adj: Tensor, edge_type: Tensor
@@ -122,11 +115,11 @@ class GATModel(nn.Module):  # type: ignore
 class GATForSeqClsf(GATModel):
     def __init__(self, config: GATForSeqClsfConfig, emb_init: Optional[Tensor]) -> None:
         super().__init__(config, emb_init=emb_init)
-        nhid = config.nhid
+        embedding_dim = config.embedding_dim
         nclass = config.nclass
         feat_dropout_p = config.feat_dropout_p
 
-        self.linear = nn.Linear(nhid, nclass)
+        self.linear = nn.Linear(embedding_dim, nclass)
         self.dropout = nn.Dropout(p=feat_dropout_p)
         self.crs_entrpy = nn.CrossEntropyLoss()
 

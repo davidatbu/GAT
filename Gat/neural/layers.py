@@ -63,7 +63,7 @@ class DotProductAttHead(nn.Module):  # type: ignore
 
 
 class GATLayer(nn.Module):  # type: ignore
-    def __init__(self, config: GATConfig, concat: bool = True):
+    def __init__(self, config: GATConfig):
         nhid = config.nhid
         nheads = config.nheads
         embedding_dim = config.embedding_dim
@@ -73,9 +73,7 @@ class GATLayer(nn.Module):  # type: ignore
             raise Exception("nhid * nheads != out_features")
         super(GATLayer, self).__init__()
 
-        out_dim = embedding_dim if concat else nhid
-
-        self.W_o = nn.Linear(out_dim, out_dim)
+        self.W_o = nn.Linear(embedding_dim, embedding_dim)
 
         # THe +1 is because we might add an additional edge type
         edge_k_embedding = nn.Embedding(nedge_type + 1, 1)
@@ -90,39 +88,26 @@ class GATLayer(nn.Module):  # type: ignore
                 for _ in range(nheads)
             ]
         )
-        self.concat = concat
 
     def forward(self, h: Tensor, adj: Tensor, edge_type: Tensor) -> Tensor:
         lsatt_res = [att(h, adj, edge_type) for att in self.attentions]
-        if self.concat:
-            h = torch.cat(lsatt_res, dim=1)
-        else:
-            h = torch.stack(lsatt_res, dim=0).mean(dim=0)
+        h = torch.cat(lsatt_res, dim=1)
         h = self.W_o(h)
         return h
 
 
 class GATLayerWrapper(nn.Module):  # type: ignore
-    def __init__(
-        self, config: GATConfig, do_residual: bool = True, concat: bool = True
-    ):
-        if do_residual and not concat:
-            raise Exception("Can't do residual connection when not concatting")
+    def __init__(self, config: GATConfig):
         super().__init__()
-        do_layer_norm = config.do_layer_norm
         feat_dropout_p = config.feat_dropout_p
+        embedding_dim = config.embedding_dim
+        self.do_layer_norm = config.do_layer_norm
+        self.do_residual = config.do_residual
 
-        self.layer = GATLayer(config, concat=concat)
+        self.layer = GATLayer(config)
 
-        if concat:
-            out_features = config.embedding_dim
-        else:
-            out_features = config.nhid
-        self.layer_norm = nn.LayerNorm(out_features)
+        self.layer_norm = nn.LayerNorm(embedding_dim)
         self.dropout = nn.Dropout(feat_dropout_p)
-
-        self.do_residual = do_residual
-        self.do_layer_norm = do_layer_norm
 
     def forward(self, h: Tensor, adj: Tensor, edge_type: Tensor) -> Tensor:
         h = self.dropout(h)
@@ -133,34 +118,34 @@ class GATLayerWrapper(nn.Module):  # type: ignore
             h_new = self.layer_norm(h_new)
         return h_new  # type: ignore
 
+class RezeroWrapper(nn.Module):
+
+    def __init__(self, layer: nn.Module):
+        self.rezero_weight = torch.tensor([0])
+        self.layer = layer
+
+    def forward(self, h: Tensor) -> Tensor:
+        return h + self.rezero_weight
+
+
 
 class FeedForwardWrapper(nn.Module):  # type: ignore
-    def __init__(
-        self, config: GATConfig, do_residual: bool = True, concat: bool = True
-    ):
-        if do_residual and not concat:
-            raise Exception("Can't do residual connection when not concatting")
+    def __init__(self, config: GATConfig):
         super().__init__()
-        do_layer_norm = config.do_layer_norm
         embedding_dim = config.embedding_dim
-        nhid = config.nhid
         feat_dropout_p = config.feat_dropout_p
+        self.do_layer_norm = config.do_layer_norm
+        self.do_residual = config.do_residual
 
         w2_bias = True
-        if do_layer_norm:
+        if self.do_layer_norm:
             w2_bias = False
 
         self.W1 = nn.Linear(embedding_dim, embedding_dim // 4, bias=True)
-        if concat:
-            out_features = embedding_dim
-        else:
-            out_features = nhid
         self.relu = nn.ReLU()
-        self.W2 = nn.Linear(embedding_dim // 4, out_features, bias=w2_bias)
-        self.layer_norm = nn.LayerNorm(out_features)
+        self.W2 = nn.Linear(embedding_dim // 4, embedding_dim, bias=w2_bias)
+        self.layer_norm = nn.LayerNorm(embedding_dim)
 
-        self.do_residual = do_residual
-        self.do_layer_norm = do_layer_norm
         self.dropout = nn.Dropout(feat_dropout_p)
 
     def forward(self, h: Tensor) -> Tensor:
@@ -177,9 +162,9 @@ class FeedForwardWrapper(nn.Module):  # type: ignore
 class EmbeddingWrapper(nn.Module):  # type: ignore
     def __init__(self, config: GATConfig, emb_init: Optional[Tensor]):
         super().__init__()
-        do_layer_norm = config.do_layer_norm
         vocab_size = config.vocab_size
         embedding_dim = config.embedding_dim
+        self.do_layer_norm = config.do_layer_norm
 
         self.embedding = nn.Embedding(
             num_embeddings=vocab_size, embedding_dim=embedding_dim, padding_idx=0
@@ -191,7 +176,6 @@ class EmbeddingWrapper(nn.Module):  # type: ignore
             logger.info("Initializing embeddings with pretrained embeddings ...")
             self.embedding.from_pretrained(emb_init)
         self.layer_norm = nn.LayerNorm(normalized_shape=embedding_dim)
-        self.do_layer_norm = do_layer_norm
 
     def forward(self, tcword_id: Tensor, position_ids: Tensor) -> Tensor:
         assert len(tcword_id) == len(position_ids)
