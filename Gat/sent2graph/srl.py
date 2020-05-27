@@ -13,6 +13,7 @@ from typing import Union
 
 import torch
 from allennlp.predictors.predictor import Predictor
+from allennlp_models import structured_prediction
 from typing_extensions import Literal
 
 from ..utils.base import Edge
@@ -120,7 +121,7 @@ class SRLSentenceToGraph(SentenceToGraph):
             logger.warning("NOT USING CUDA FOR SRL")
             cuda_device = -1
         self.allen = Predictor.from_path(
-            "/projectnb/llamagrp/davidat/pretrained_models/allenlp/bert-base-srl-2019.06.17.tar.gz",
+            "/projectnb/llamagrp/davidat/pretrained_models/allenlp/bert-base-srl-2020.03.24.tar.gz",
             cuda_device=cuda_device,
         )
 

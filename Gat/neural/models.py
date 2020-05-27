@@ -40,7 +40,9 @@ class GATLayered(nn.Module):  # type: ignore
         )
         self.last_layer = GATLayerWrapper(config, do_residual=False, concat=False)
 
-    def forward(self, tcword_id: Tensor, position_ids: Tensor, adj: Tensor, edge_type: Tensor) -> Tensor:  # type: ignore
+    def forward(
+        self, tcword_id: Tensor, position_ids: Tensor, adj: Tensor, edge_type: Tensor
+    ) -> Tensor:
         h = self.emb_wrapper(tcword_id, position_ids)
 
         for gat_layer_wrapper, feed_forward_wrapper in zip(
@@ -78,6 +80,7 @@ class GATModel(nn.Module):  # type: ignore
         counter = 0
 
         for one_lsedge, one_lsedge_type, one_lsimp_node, one_nodeid2wordid in batch:
+            assert one_nodeid2wordid is not None
             # Extend nodeid2wordid
             nodeid2wordid.extend(one_nodeid2wordid)
 
@@ -203,7 +206,11 @@ class GATForSeqClsf(GATModel):
 
         return (word_ids, position_ids, adj, edge_type, cls_node)
 
-    def forward(self, prepared_X: Tuple[Tensor, Tensor, Tensor, Tensor, Tensor], y: Optional[List[int]] = None) -> Tuple[Tensor, ...]:  # type: ignore
+    def forward(
+        self,
+        prepared_X: Tuple[Tensor, Tensor, Tensor, Tensor, Tensor],
+        y: Optional[List[int]] = None,
+    ) -> Tuple[Tensor, ...]:
         """
 
         Returns

@@ -7,6 +7,8 @@ from typing import Tuple
 from typing import TypeVar
 from typing import Union
 
+from typing_extensions import Literal
+
 
 class Config:
 
@@ -56,6 +58,7 @@ class TrainConfig(Config):
         "do_eval_every_epoch",
         "use_cuda",
         "dataset_dir",
+        "sent2graph_name",
     ]
 
     def __init__(
@@ -63,6 +66,7 @@ class TrainConfig(Config):
         lr: float,
         epochs: int,
         dataset_dir: str,
+        sent2graph_name: Literal["dep", "srl"],
         train_batch_size: int,
         eval_batch_size: int,
         use_cuda: bool = True,
@@ -71,6 +75,7 @@ class TrainConfig(Config):
         self.lr = lr
         self.use_cuda = use_cuda
         self.epochs = epochs
+        self.sent2graph_name = sent2graph_name
         self.do_eval_every_epoch = do_eval_every_epoch
         self.eval_batch_size = eval_batch_size
         self.train_batch_size = train_batch_size
