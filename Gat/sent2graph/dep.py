@@ -10,7 +10,7 @@ from ..utils.base import NodeList
 from ..utils.base import SentGraph
 from .base import SentenceToGraph
 
-# https://spacy.io/api/annotation#dependency-parsing
+# https://github.com/explosion/spacy-models/releases/tag/en_core_web_md-2.2.0
 _id2edge_type = [
     "acl",
     "acomp",
@@ -27,7 +27,6 @@ _id2edge_type = [
     "ccomp",
     "compound",
     "conj",
-    "cop",
     "csubj",
     "csubjpass",
     "dative",
@@ -39,28 +38,24 @@ _id2edge_type = [
     "mark",
     "meta",
     "neg",
-    "nn",
-    "nounmod",
-    "npmod",
+    "nmod",
+    "npadvmod",
     "nsubj",
     "nsubjpass",
     "nummod",
     "oprd",
-    "obj",
-    "obl",
     "parataxis",
     "pcomp",
     "pobj",
     "poss",
     "preconj",
+    "predet",
     "prep",
     "prt",
     "punct",
     "quantmod",
     "relcl",
-    # "root",
     "xcomp",
-    "",
 ]
 
 _edge_type2id = {edge_type: id_ for id_, edge_type in enumerate(_id2edge_type)}
@@ -90,13 +85,16 @@ class DepSentenceToGraph(SentenceToGraph):
         lsedge_type: EdgeTypeList = []
         lsimp_node: NodeList = []
 
-        for token in doc:
+        for i, token in enumerate(doc):
+            assert i == token.i
             if token.dep_ == "ROOT":
                 assert token.head == token
-                lsimp_node.append(token.idx)
+                lsimp_node.append(token.i)
             else:
-                lsedge.append((token.idx, token.head.idx))
-                lsedge_type.append(token.dep_)
+                lsedge.append((token.i, token.head.i))
+                lsedge_type.append(self.edge_type2id[token.dep_])
+
+        assert lsimp_node != []
 
         return SentGraph(
             lsedge=lsedge,

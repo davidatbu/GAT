@@ -12,9 +12,10 @@ from typing import List
 from typing import Optional
 from typing import Sized
 from typing import Tuple
+from typing import Type
 
 import torch
-from allennlp.data.tokenizers.word_splitter import SpacyWordSplitter
+from allennlp.data.tokenizers import SpacyTokenizer
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from typing_extensions import Counter
@@ -23,6 +24,7 @@ from typing_extensions import Literal
 from ..embeddings.base import WordToVec
 from ..embeddings.glove import GloveWordToVec
 from ..sent2graph.base import SentenceToGraph
+from ..sent2graph.dep import DepSentenceToGraph
 from ..sent2graph.srl import SRLSentenceToGraph
 from ..utils.base import grouper
 from ..utils.base import SentExample
@@ -83,7 +85,11 @@ class ConcatTextSource(TextSource):
         return sum(self.lens)
 
     def __repr__(self) -> str:
-        return "Cat" + "-" + "-".join(str(txt_src) for txt_src in self.lstxt_src)
+        return (
+            "ConcatTextSource"
+            + "-"
+            + "-".join(str(txt_src) for txt_src in self.lstxt_src)
+        )
 
 
 class CsvTextSource(TextSource):
@@ -96,7 +102,7 @@ class CsvTextSource(TextSource):
         csv_reader_kwargs: Dict[str, Any] = {},
     ) -> None:
 
-        self.fp_stem = fp.stem
+        self.fp = fp
 
         with fp.open() as f:
             reader = csv.reader(f, **csv_reader_kwargs)
@@ -118,7 +124,7 @@ class CsvTextSource(TextSource):
             ]
 
     def __repr__(self) -> str:
-        return f"Csv_{self.fp_stem}"
+        return f"CsvTextSource-fp_{str(self.fp)}"
 
     def __getitem__(self, idx: int) -> SentExample:
         return self.rows[idx]
@@ -128,23 +134,25 @@ class CsvTextSource(TextSource):
 
 
 class Cacheable:
+    """Subclassers must implement a meaningful __repr___"""
+
     def __init__(self, cache_dir: Path, ignore_cache: bool) -> None:
-        self.specific_cache_dir = cache_dir / str(self)
+
+        # Use the  repr to create a cache dir
+        obj_repr_hash = hashlib.sha1(str(self).encode()).hexdigest()
+        self.specific_cache_dir = cache_dir / obj_repr_hash
         self.specific_cache_dir.mkdir(exist_ok=True)
+
         if self.cached_exists() and not (ignore_cache):
-            logger.info(f"{str(self)} found cached.")
+            logger.info(f"{obj_repr_hash} found cached.")
             self.from_cache()
         else:
-            logger.info(f"{str(self)} not found cached. Processing ...")
+            logger.info(f"{obj_repr_hash} not found cached. Processing ...")
             self.process()
             self.to_cache()
 
     @property
     def cached_attrs(self) -> List[Tuple[Literal["torch", "pkl", "json"], str]]:
-        raise NotImplementedError()
-
-    @property
-    def lscache_uniquer_attr(self) -> List[str]:
         raise NotImplementedError()
 
     def process(self) -> None:
@@ -195,18 +203,6 @@ class Cacheable:
             else:
                 raise Exception("pkcling method")
 
-    def __repr__(self) -> str:
-        return (
-            type(self).__name__
-            + "-"
-            + "-".join(
-                [
-                    f"{attr[:4]}_{str(getattr(self, attr))}"
-                    for attr in self.lscache_uniquer_attr
-                ]
-            )
-        )
-
 
 class VocabAndEmb(Cacheable):
     def __init__(
@@ -222,7 +218,7 @@ class VocabAndEmb(Cacheable):
         self.embedder = embedder
         self.unk_thres = unk_thres
         self.txt_src = txt_src
-        self.splitter = SpacyWordSplitter()
+        self.tokenizer = SpacyTokenizer()
 
         self._pad_id = 0
         self._cls_id = 1
@@ -242,9 +238,8 @@ class VocabAndEmb(Cacheable):
     def cached_attrs(self) -> List[Tuple[Literal["torch", "json", "pkl"], str]]:
         return [("pkl", "_id2word"), ("pkl", "_id2lbl"), ("torch", "_embs")]
 
-    @property
-    def lscache_uniquer_attr(self) -> List[str]:
-        return ["lower_case", "embedder", "unk_thres", "txt_src"]
+    def __repr__(self) -> str:
+        return f"VocabAndEmb-lower_case_{self.lower_case}-embedder_{self.embedder}_unk_thres_{self.unk_thres}_txt_src_{self.txt_src}"
 
     def process(self) -> None:
 
@@ -258,7 +253,7 @@ class VocabAndEmb(Cacheable):
             for sent in lssent:
                 if self.lower_case:
                     sent = sent.lower()
-                    lstoken = self.splitter.split_words(sent)
+                    lstoken = self.tokenizer.tokenize(sent)
                     lsword = [token.text for token in lstoken]
                     word_counts.update(lsword)
 
@@ -303,7 +298,7 @@ class VocabAndEmb(Cacheable):
     def tokenize_before_unk(self, sent: str) -> List[str]:
         if self.lower_case:
             sent = sent.lower()
-        before_unk = [token.text for token in self.splitter.split_words(sent)]
+        before_unk = [token.text for token in self.tokenizer.tokenize(sent)]
         return before_unk
 
     def batch_tokenize_before_unk(self, lssent: List[str]) -> List[List[str]]:
@@ -352,20 +347,17 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
             ("pkl", "_lssentgraph_ex"),
         ]
 
-    @property
-    def lscache_uniquer_attr(self) -> List[str]:
-        return [
-            "sent2graph",
-            "txt_src",
-            "vocab_and_emb",
-        ]
+    def __repr__(self) -> str:
+        return f"SentenceGraphDataset-sent2graph_{self.sent2graph}-txt_src_{self.txt_src}-vocab_and_emb_{self.vocab_and_emb}"
 
     def process(self) -> None:
         logger.info("Getting sentence graphs ...")
         batch_size = min(self._processing_batch_size, len(self.txt_src))
         # Do batched SRL prediction
         lslssent: List[List[str]]
+        # Group the sent_ex's into batches
         batched_lssent_ex = grouper(self.txt_src, n=batch_size)
+
         lssentgraph_ex: List[SentgraphExample] = []
         num_batches = (len(self.txt_src) // batch_size) + int(
             len(self.txt_src) % batch_size != 0
@@ -373,7 +365,7 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
         self.sent2graph.init_workers()
         for lssent_ex in tqdm(
             batched_lssent_ex,
-            desc=f"Predicting SRL with batch size {batch_size}",
+            desc=f"Turning sentence into graphs with batch size {batch_size}",
             total=num_batches,
         ):
             one_batch_lssentgraph_ex = self._batch_process_sent_ex(lssent_ex)
@@ -505,8 +497,15 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
         return list(X), list(y)
 
 
+SENT2GRAPHS: Dict[str, Type[SentenceToGraph]] = {
+    "srl": SRLSentenceToGraph,
+    "dep": DepSentenceToGraph,
+}
+
+
 def load_splits(
     dataset_dir: Path,
+    sent2graph_name: Literal["srl", "dep"],
     splits: List[str] = ["train", "val"],
     fp_ending: str = "tsv",
     lstxt_col: List[str] = ["sentence1", "sentence2"],
@@ -534,11 +533,12 @@ def load_splits(
         unk_thres=unk_thres,
     )
 
+    cls_sent2graph = SENT2GRAPHS[sent2graph_name]
     split_datasets = {  # noqa:
         split: SentenceGraphDataset(
             cache_dir=dataset_dir,
             txt_src=txt_src,
-            sent2graph=SRLSentenceToGraph(),
+            sent2graph=cls_sent2graph(),
             vocab_and_emb=vocab_and_emb,
             processing_batch_size=1000,
         )
@@ -555,20 +555,3 @@ def load_splits(
                 logger.info(f"\t{vocab_and_emb.batch_id2word(lsword_id)}")  # type: ignore
 
     return split_datasets, txt_srcs, vocab_and_emb
-
-
-def main() -> None:
-    dataset_dir = Path("data/SST-2_small")  # noqa:
-    load_splits(
-        dataset_dir,
-        splits=["train", "dev"],
-        # fp_ending="csv",
-        lstxt_col=["sentence"],
-        lbl_col="label",
-        # delimiter=",",
-    )
-
-
-if __name__ == "__main__":
-    logger.setLevel(logging.INFO)
-    main()
