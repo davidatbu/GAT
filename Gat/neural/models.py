@@ -59,6 +59,8 @@ class GATModel(nn.Module):  # type: ignore
     ) -> Tuple[List[Edge], List[EdgeType], List[List[Node]], List[int], List[int]]:
         """
         Increment the relative node numbers in the adjacency list, and the list of key nodes
+
+        Also, add edges in the other direction if we're doing unidirected.
         """
 
         lsedge: List[Edge] = []
@@ -92,7 +94,7 @@ class GATModel(nn.Module):  # type: ignore
             counter += len(one_nodeid2wordid)
 
         if self.undirected:
-            setedge: Set[Edge] = set()
+            setedge: Set[Edge] = set()  # Use to keep a unique list of nodes
             new_lsedge: List[Edge] = []
             new_lsedge_type: List[EdgeType] = []
 

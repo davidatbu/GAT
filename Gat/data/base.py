@@ -327,7 +327,6 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
         txt_src: TextSource,
         sent2graph: SentenceToGraph,
         vocab_and_emb: VocabAndEmb,
-        undirected_edges: bool = True,
         ignore_cache: bool = False,
         unk_thres: Optional[int] = None,
         processing_batch_size: int = 800,
@@ -336,7 +335,6 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
         self.sent2graph = sent2graph
         self.txt_src = txt_src
         self.vocab_and_emb = vocab_and_emb
-        self._undirected_edges = undirected_edges
         self._processing_batch_size = processing_batch_size
 
         Cacheable.__init__(self, cache_dir=cache_dir, ignore_cache=ignore_cache)
@@ -381,6 +379,10 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
         lslssent: List[List[str]]
         lslbl: List[str]
         lslssent, lslbl = map(list, zip(*lssent_ex))  # type: ignore
+
+        ### This part is complicated because we allow an arbitrary number of sentences per example,
+        ### AND we want to do batched prediction.
+        ### The trick is, for each batch do one "column" of the batch at a time.
 
         # Easily deadl with lblids
         lslbl_id = [self.vocab_and_emb.lbl2id(lbl) for lbl in lslbl]
@@ -497,9 +499,15 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
         return list(X), list(y)
 
 
+class SrlAndDepSentenceToGraph(SentenceToGraph):
+    def __init__(self) -> None:
+        raise NotImplementedError()
+
+
 SENT2GRAPHS: Dict[str, Type[SentenceToGraph]] = {
     "srl": SRLSentenceToGraph,
     "dep": DepSentenceToGraph,
+    "srl_dep": SrlAndDepSentenceToGraph,
 }
 
 
