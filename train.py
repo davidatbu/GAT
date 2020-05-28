@@ -14,13 +14,13 @@ import sklearn.metrics as skmetrics
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import wandb  # type: ignore
 from sklearn.metrics import confusion_matrix
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
+import wandb  # type: ignore
 from Gat.config.base import EverythingConfig
 from Gat.config.base import GATForSeqClsfConfig
 from Gat.config.base import TrainConfig
@@ -60,6 +60,7 @@ class Trainer:
         self._val_name = "dev"
         datasets, txt_srcs, vocab_and_emb = load_splits(
             Path(self.config.dataset_dir),
+            sent2graph_name=self.config.sent2graph_name,
             lstxt_col=["sentence"],
             splits=["train", self._val_name],
         )
@@ -252,9 +253,11 @@ def main() -> None:
         lr=1e-3,
         train_batch_size=128,
         eval_batch_size=128,
-        epochs=1,
-        # dataset_dir="actual_data/glue_data/SST-2",
-        dataset_dir="actual_data/SST-2_tiny",
+        epochs=10,
+        dataset_dir="actual_data/glue_data/SST-2",
+        sent2graph_name="dep",
+        # dataset_dir="actual_data/SST-2_tiny",
+        # dataset_dir="actual_data/SST-2_small",
     )
 
     trainer = Trainer(trainer_config)
@@ -265,9 +268,10 @@ def main() -> None:
         nhid=50,
         nheads=6,
         embedding_dim=300,
+        intermediate_dim=300,
         feat_dropout_p=0.3,
         nclass=len(trainer.vocab_and_emb._id2lbl),
-        nmid_layers=6,
+        nmid_layers=10,
         nedge_type=len(trainer.val_dataset.sent2graph.id2edge_type),  # type: ignore
     )
 

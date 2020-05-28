@@ -1,5 +1,7 @@
 import logging
 import math
+from typing import Any
+from typing import Callable
 from typing import Optional
 
 import numpy as np
@@ -62,7 +64,7 @@ class DotProductAttHead(nn.Module):  # type: ignore
         return h_prime
 
 
-class GATLayer(nn.Module):  # type: ignore
+class MultiHeadAtt(nn.Module):  # type: ignore
     def __init__(self, config: GATConfig):
         nhid = config.nhid
         nheads = config.nheads
@@ -71,7 +73,7 @@ class GATLayer(nn.Module):  # type: ignore
 
         if not nhid * nheads == embedding_dim:
             raise Exception("nhid * nheads != out_features")
-        super(GATLayer, self).__init__()
+        super().__init__()
 
         self.W_o = nn.Linear(embedding_dim, embedding_dim)
 
@@ -96,95 +98,122 @@ class GATLayer(nn.Module):  # type: ignore
         return h
 
 
-class GATLayerWrapper(nn.Module):  # type: ignore
-    def __init__(self, config: GATConfig):
+class Rezero(nn.Module):  # type: ignore
+    def __init__(
+        self, layer: nn.Module  # type: ignore
+    ):
         super().__init__()
-        feat_dropout_p = config.feat_dropout_p
-        embedding_dim = config.embedding_dim
-        self.do_layer_norm = config.do_layer_norm
-        self.do_residual = config.do_residual
-
-        self.layer = GATLayer(config)
-
-        self.layer_norm = nn.LayerNorm(embedding_dim)
-        self.dropout = nn.Dropout(feat_dropout_p)
-
-    def forward(self, h: Tensor, adj: Tensor, edge_type: Tensor) -> Tensor:
-        h = self.dropout(h)
-        h_new = self.layer(h, adj, edge_type)
-        if self.do_residual:
-            h_new = h_new + h  # Learnt not to do += for autograd
-        if self.do_layer_norm:
-            h_new = self.layer_norm(h_new)
-        return h_new  # type: ignore
-
-class RezeroWrapper(nn.Module):
-
-    def __init__(self, layer: nn.Module):
-        self.rezero_weight = torch.tensor([0])
+        self.register_parameter(
+            "rezero_weight", nn.Parameter(torch.tensor([0], dtype=torch.float))
+        )
         self.layer = layer
 
-    def forward(self, h: Tensor) -> Tensor:
-        return h + self.rezero_weight
+    def forward(self, h: Tensor, **kwargs: Any) -> Tensor:
+        after_rezero = h + self.rezero_weight * self.layer(h, **kwargs)
+        return after_rezero  # type: ignore
 
+
+class ResidualAndNorm(nn.Module):  # type: ignore
+    def __init__(
+        self, dim: int, layer: nn.Module  # type: ignore
+    ):
+        super().__init__()
+        self.layer_norm = nn.LayerNorm(dim)
+        self.layer = layer
+
+    def forward(self, h: Tensor, **kwargs: Any) -> Tensor:
+        after_residual = h + self.layer(h, **kwargs)
+        after_layer_norm = self.layer_norm(after_residual)
+        return after_layer_norm
+
+
+class FeedForward(nn.Module):  # type: ignore
+    def __init__(
+        self, in_out_dim: int, intermediate_dim: int, out_bias: bool, dropout_p: float
+    ):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout_p)
+        self.W1 = nn.Linear(in_out_dim, intermediate_dim, bias=True)
+        self.relu = nn.ReLU()
+        self.W2 = nn.Linear(intermediate_dim, in_out_dim, bias=out_bias)
+
+    def forward(self, h: Tensor) -> Tensor:
+        after_dropout = self.dropout(h)
+        after_ff = self.W2(self.dropout(self.relu(self.W1(after_dropout))))
+        return after_ff
+
+
+class MultiHeadAttWrapper(nn.Module):  # type: ignore
+    def __init__(self, config: GATConfig):
+        super().__init__()
+
+        multihead_att = MultiHeadAtt(config)
+
+        self.wrapper: nn.Module  # type: ignore
+        if config.do_rezero:
+            self.wrapper = Rezero(layer=multihead_att)
+        else:
+            self.wrapper = ResidualAndNorm(
+                dim=config.embedding_dim, layer=multihead_att
+            )
+
+    def forward(self, h: Tensor, **kwargs: Any) -> Tensor:
+        return self.wrapper(h, **kwargs)  # type: ignore
 
 
 class FeedForwardWrapper(nn.Module):  # type: ignore
     def __init__(self, config: GATConfig):
         super().__init__()
-        embedding_dim = config.embedding_dim
-        feat_dropout_p = config.feat_dropout_p
-        self.do_layer_norm = config.do_layer_norm
-        self.do_residual = config.do_residual
 
-        w2_bias = True
-        if self.do_layer_norm:
-            w2_bias = False
+        out_bias = True
+        if config.do_layer_norm:
+            out_bias = False
+        ff = FeedForward(
+            in_out_dim=config.embedding_dim,
+            intermediate_dim=config.intermediate_dim,
+            out_bias=out_bias,
+            dropout_p=config.feat_dropout_p,
+        )
 
-        self.W1 = nn.Linear(embedding_dim, embedding_dim // 4, bias=True)
-        self.relu = nn.ReLU()
-        self.W2 = nn.Linear(embedding_dim // 4, embedding_dim, bias=w2_bias)
-        self.layer_norm = nn.LayerNorm(embedding_dim)
+        self.wrapper: nn.Module  # type: ignore
+        if config.do_rezero:
+            self.wrapper = Rezero(layer=ff)
+        else:
+            self.wrapper = ResidualAndNorm(dim=config.embedding_dim, layer=ff)
 
-        self.dropout = nn.Dropout(feat_dropout_p)
-
-    def forward(self, h: Tensor) -> Tensor:
-        h = self.dropout(h)
-        h_new = self.W2(self.relu(self.W1(h)))
-        if self.do_residual:
-            h_new = h_new + h  # Learnt not to do += for autograd
-        if self.do_layer_norm:
-            h_new = self.layer_norm(h_new)
-        return h_new
+    def forward(self, h: Tensor, **kwargs: Any) -> Tensor:
+        return self.wrapper(h, **kwargs)  # type: ignore
 
 
 # TODO: Add positional embeddings here
 class EmbeddingWrapper(nn.Module):  # type: ignore
     def __init__(self, config: GATConfig, emb_init: Optional[Tensor]):
         super().__init__()
-        vocab_size = config.vocab_size
-        embedding_dim = config.embedding_dim
-        self.do_layer_norm = config.do_layer_norm
 
         self.embedding = nn.Embedding(
-            num_embeddings=vocab_size, embedding_dim=embedding_dim, padding_idx=0
+            num_embeddings=config.vocab_size,
+            embedding_dim=config.embedding_dim,
+            padding_idx=0,
         )
-
         self.position_embedding = PositionEmbedding(config)
 
         if emb_init is not None:
             logger.info("Initializing embeddings with pretrained embeddings ...")
             self.embedding.from_pretrained(emb_init)
-        self.layer_norm = nn.LayerNorm(normalized_shape=embedding_dim)
+
+        self.wrapper: Callable[[Tensor], Tensor]
+        if config.do_layer_norm:
+            self.wrapper = nn.LayerNorm(normalized_shape=config.embedding_dim)
+        elif config.do_rezero:
+            self.wrapper = lambda x: x
 
     def forward(self, tcword_id: Tensor, position_ids: Tensor) -> Tensor:
         assert len(tcword_id) == len(position_ids)
         h = self.embedding(tcword_id)
-        h = h + self.position_embedding(position_ids)
+        after_pos_embed = h + self.position_embedding(position_ids)
 
-        if self.do_layer_norm:
-            h = self.layer_norm(h)
-        return h
+        after_potentially_norm = self.wrapper(after_pos_embed)
+        return after_potentially_norm
 
 
 class PositionEmbedding(nn.Module):  # type: ignore

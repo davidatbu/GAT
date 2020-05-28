@@ -17,7 +17,7 @@ from ..utils.base import Node
 from ..utils.base import SentGraph
 from .layers import EmbeddingWrapper
 from .layers import FeedForwardWrapper
-from .layers import GATLayerWrapper
+from .layers import MultiHeadAttWrapper
 
 
 class GATLayered(nn.Module):  # type: ignore
@@ -25,26 +25,23 @@ class GATLayered(nn.Module):  # type: ignore
         super().__init__()
 
         self.emb_wrapper = EmbeddingWrapper(config, emb_init)
-        self.lsmid_layer_wrapper = nn.ModuleList(
-            [GATLayerWrapper(config) for _ in range(config.nmid_layers)]
+        self.lsmultihead_att_wrapper = nn.ModuleList(
+            [MultiHeadAttWrapper(config) for _ in range(config.nmid_layers)]
         )
         self.lsfeed_forward_wrapper = nn.ModuleList(
             [FeedForwardWrapper(config) for _ in range(config.nmid_layers)]
         )
-        self.last_layer = GATLayerWrapper(config)
 
     def forward(
-        self, tcword_id: Tensor, position_ids: Tensor, adj: Tensor, edge_type: Tensor
+        self, word_ids: Tensor, position_ids: Tensor, adj: Tensor, edge_type: Tensor
     ) -> Tensor:
-        h = self.emb_wrapper(tcword_id, position_ids)
+        h = self.emb_wrapper(word_ids, position_ids)
 
-        for gat_layer_wrapper, feed_forward_wrapper in zip(
-            self.lsmid_layer_wrapper, self.lsfeed_forward_wrapper
+        for multihead_att_wrapper, feed_forward_wrapper in zip(
+            self.lsmultihead_att_wrapper, self.lsfeed_forward_wrapper
         ):
-            h = gat_layer_wrapper(h, adj, edge_type)
-            h = feed_forward_wrapper(h)
-
-        h = self.last_layer(h, adj, edge_type)
+            h = multihead_att_wrapper(h=h, adj=adj, edge_type=edge_type)
+            h = feed_forward_wrapper(h=h)
 
         return h  # type: ignore
 
@@ -211,7 +208,9 @@ class GATForSeqClsf(GATModel):
         """
         word_ids, position_ids, adj, edge_type, cls_node = prepared_X
 
-        h = self.gat_layered(word_ids, position_ids, adj, edge_type)
+        h = self.gat_layered(
+            word_ids=word_ids, position_ids=position_ids, adj=adj, edge_type=edge_type
+        )
 
         cls_id_h = h[cls_node]
 

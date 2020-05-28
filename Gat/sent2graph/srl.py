@@ -13,7 +13,7 @@ from typing import Union
 
 import torch
 from allennlp.predictors.predictor import Predictor
-from allennlp_models import structured_prediction
+from allennlp_models import structured_prediction  # type: ignore # noqa: # the SRL model doesn't get  "registered"  the Predictor class if we don't import this.
 from typing_extensions import Literal
 
 from ..utils.base import Edge
@@ -22,6 +22,7 @@ from ..utils.base import Node
 from ..utils.base import SentGraph
 from ..utils.base import Slice
 from .base import SentenceToGraph
+
 
 logger = logging.getLogger("__main__")
 
@@ -114,6 +115,10 @@ class SRLSentenceToGraph(SentenceToGraph):
         return _role2id
 
     def __init__(self, use_workers: bool = True) -> None:
+        
+        self.use_workers = use_workers
+
+    def init_workers(self) -> None:
         if torch.cuda.is_available():
             logger.info("Using CUDA for SRL")
             cuda_device = 0
@@ -125,9 +130,6 @@ class SRLSentenceToGraph(SentenceToGraph):
             cuda_device=cuda_device,
         )
 
-        self.use_workers = use_workers
-
-    def init_workers(self) -> None:
         self.task_queue: task_queue_t = Queue()
         self.done_queue: done_queue_t = Queue()
 

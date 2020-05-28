@@ -36,7 +36,13 @@ class Config:
             raise Exception(
                 f"{n} is not a valid confiugration for {self.__class__.__name__}"
             )
+
         super().__setattr__(n, v)
+        if not self.validate():
+            raise Exception(f"{str(self)} is invalid.")
+
+    def __str__(self) -> str:
+        return str(self.as_dict())
 
     def as_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {}
@@ -46,6 +52,9 @@ class Config:
             else:
                 d[k] = v
         return d
+
+    def validate(self) -> bool:
+        return True
 
 
 class TrainConfig(Config):
@@ -87,6 +96,7 @@ class GATConfig(Config):
     _attr_names: List[str] = [
         "vocab_size",
         "embedding_dim",
+        "intermediate_dim",
         "cls_id",
         "nmid_layers",
         "nhid",
@@ -96,17 +106,17 @@ class GATConfig(Config):
         "edge_dropout_p",
         "feat_dropout_p",
         "alpha",
-        "do_residual",
         "undirected",
         "do_layer_norm",
         "nedge_type",
-        "rezero",
+        "do_rezero",
     ]
 
     def __init__(
         self,
         vocab_size: int,
         embedding_dim: int,
+        intermediate_dim: int,
         cls_id: int,
         nmid_layers: int,
         nhid: int,
@@ -117,13 +127,13 @@ class GATConfig(Config):
         edge_dropout_p: float = 0.0,
         feat_dropout_p: float = 0.3,
         alpha: float = 0.2,
-        do_residual: bool = True,
         do_layer_norm: bool = True,
         undirected: bool = True,
-        rezero: bool = True,
+        do_rezero: bool = True,
     ):
         self.vocab_size = vocab_size
         self.embedding_dim = embedding_dim
+        self.intermediate_dim = intermediate_dim
         self.cls_id = cls_id
         self.nmid_layers = nmid_layers
         self.nhid = nhid
@@ -134,11 +144,12 @@ class GATConfig(Config):
         self.edge_dropout_p = edge_dropout_p
         self.feat_dropout_p = feat_dropout_p
         self.alpha = alpha
-        self.do_residual = do_residual
         self.do_layer_norm = do_layer_norm
         self.undirected = undirected
-        self.rezero = rezero
+        self.do_rezero = do_rezero
 
+    def validate(self) -> bool:
+        return True
 
 class GATForSeqClsfConfig(GATConfig):
 
