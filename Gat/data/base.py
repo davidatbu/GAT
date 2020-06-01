@@ -286,14 +286,16 @@ class VocabAndEmb(Cacheable):
             raise Exception("No embedder was provided, so embs is not set.")
         return self._embs
 
-    def word2id(self, word: str) -> int:
-        return self._word2id.get(word, self._unk_id)
+    @property
+    def word2id(self,) -> Dict[str, int]:
+        return self._word2id
+
+    @property
+    def lbl2id(self) -> Dict[str, int]:
+        return self._lbl2id
 
     def batch_id2word(self, lsword_id: List[int]) -> List[str]:
         return [self._id2word[word_id] for word_id in lsword_id]
-
-    def lbl2id(self, lbl: str) -> int:
-        return self._lbl2id[lbl]
 
     def tokenize_before_unk(self, sent: str) -> List[str]:
         if self.lower_case:
@@ -385,7 +387,7 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
         ### The trick is, for each batch do one "column" of the batch at a time.
 
         # Easily deadl with lblids
-        lslbl_id = [self.vocab_and_emb.lbl2id(lbl) for lbl in lslbl]
+        lslbl_id = [self.vocab_and_emb.lbl2id[lbl] for lbl in lslbl]
 
         lsper_column_sentgraph: List[List[SentGraph]] = []
         for per_column_lssent in zip(*lslssent):
@@ -393,7 +395,7 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
                 list(per_column_lssent)
             )
             per_column_nodeid2wordid = [
-                [self.vocab_and_emb.word2id(word) for word in lsword]
+                [self.vocab_and_emb.word2id[word] for word in lsword]
                 for lsword in per_column_lsword
             ]
             per_column_sentgraph = self.sent2graph.batch_to_graph(per_column_lsword)
@@ -427,7 +429,7 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
             lsword = self.vocab_and_emb.tokenize_before_unk(sent)
             lsedge, lsedge_type, lsimp_node, _ = self.sent2graph.to_graph(lsword)
             # We get indices relative to sentence beginnig, convert these to global ids
-            nodeid2wordid = [self.vocab_and_emb.word2id(word) for word in lsword]
+            nodeid2wordid = [self.vocab_and_emb.word2id[word] for word in lsword]
             sentgraph = SentGraph(
                 lsedge=lsedge,
                 lsedge_type=lsedge_type,
@@ -435,7 +437,7 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
                 nodeid2wordid=nodeid2wordid,
             )
             lssentgraph.append(sentgraph)
-        lbl_id = self.vocab_and_emb.lbl2id(lbl)
+        lbl_id = self.vocab_and_emb.lbl2id[lbl]
         sentgraph_ex = SentgraphExample(lssentgraph=lssentgraph, lbl_id=lbl_id)
         return sentgraph_ex
 

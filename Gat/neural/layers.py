@@ -185,7 +185,6 @@ class FeedForwardWrapper(nn.Module):  # type: ignore
         return self.wrapper(h, **kwargs)  # type: ignore
 
 
-# TODO: Add positional embeddings here
 class EmbeddingWrapper(nn.Module):  # type: ignore
     def __init__(self, config: GATConfig, emb_init: Optional[Tensor]):
         super().__init__()
