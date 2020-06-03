@@ -4,10 +4,10 @@ import torch
 from torch import nn
 from tqdm import tqdm
 
-from .layers import GraphMultiHeadSelfAttention
+from .layers import GraphMultiHeadAttention
 
 
-class TestGraphMultiHeadSelfAttention:
+class TestGraphMultiHeadAttention:
     def setUp(self) -> None:
         self.N = 13
         self.E = 24
@@ -50,7 +50,7 @@ class TestGraphMultiHeadSelfAttention:
                 requires_grad=True,
             )
 
-            multihead_att = GraphMultiHeadSelfAttention(
+            multihead_att = GraphMultiHeadAttention(
                 embed_dim=self.E, num_heads=num_heads, include_edge_features=True
             )
             adam = torch.optim.Adam(

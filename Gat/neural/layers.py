@@ -19,7 +19,7 @@ else:
     Module = nn.Module
 
 
-class GraphMultiHeadSelfAttention(Module):
+class GraphMultiHeadAttention(Module):
     def __init__(
         self,
         embed_dim: int,
