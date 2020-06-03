@@ -175,9 +175,7 @@ class Rezero(nn.Module):  # type: ignore
         self, layer: nn.Module  # type: ignore
     ):
         super().__init__()
-        self.register_parameter(
-            "rezero_weight", nn.Parameter(torch.tensor([0], dtype=torch.float))
-        )
+        self.rezero_weight = nn.Parameter(torch.tensor([0], dtype=torch.float))
         self.layer = layer
 
     def forward(self, h: torch.Tensor, **kwargs: T.Any) -> torch.Tensor:
@@ -215,7 +213,7 @@ class FeedForward(nn.Module):  # type: ignore
         return after_ff
 
 
-class MultiHeadAttWrapper(nn.Module):  # type: ignore
+class GraphMultiHeadAttentionWrapped(nn.Module):  # type: ignore
     def __init__(
         self,
         embed_dim: int,
@@ -224,6 +222,7 @@ class MultiHeadAttWrapper(nn.Module):  # type: ignore
         edge_dropout_p: float,
         rezero_or_residual: TT.Literal["rezero", "residual"] = "rezero",
     ):
+        "Wrapped with rezero or residual connection"
         super().__init__()
 
         multihead_att = GraphMultiHeadAttention(
@@ -233,7 +232,7 @@ class MultiHeadAttWrapper(nn.Module):  # type: ignore
             edge_dropout_p=edge_dropout_p,
         )
 
-        self.wrapper: nn.Module  # type: ignore
+        self.wrapper: Module
         if rezero_or_residual == "rezero":
             self.wrapper = Rezero(layer=multihead_att)
         elif rezero_or_residual == "residual":
@@ -241,8 +240,19 @@ class MultiHeadAttWrapper(nn.Module):  # type: ignore
         else:
             raise Exception('rezero_or_residual must be one of "rezero" or "residual"')
 
-    def forward(self, h: torch.Tensor, **kwargs: T.Any) -> torch.Tensor:
-        return self.wrapper(h, **kwargs)  # type: ignore
+    def forward(
+        self,
+        node_features: torch.FloatTensor,
+        adj: torch.BoolTensor,
+        key_edge_features: T.Optional[torch.FloatTensor] = None,
+        value_edge_features: T.Optional[torch.FloatTensor] = None,
+    ) -> torch.Tensor:
+        return self.wrapper(
+            node_features,
+            adj=adj,
+            key_edge_features=key_edge_features,
+            value_edge_features=value_edge_features,
+        )
 
 
 class FeedForwardWrapper(nn.Module):  # type: ignore

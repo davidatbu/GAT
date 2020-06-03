@@ -55,7 +55,7 @@ class Config:
         return True
 
 
-class TrainConfig(Config):
+class TrainerConfig(Config):
 
     _attr_names: List[str] = [
         "lr",
@@ -93,7 +93,7 @@ class GATConfig(Config):
 
     _attr_names: List[str] = [
         "vocab_size",
-        "embedding_dim",
+        "embed_dim",
         "intermediate_dim",
         "cls_id",
         "nmid_layers",
@@ -113,7 +113,7 @@ class GATConfig(Config):
     def __init__(
         self,
         vocab_size: int,
-        embedding_dim: int,
+        embed_dim: int,
         intermediate_dim: int,
         cls_id: int,
         nmid_layers: int,
@@ -130,7 +130,7 @@ class GATConfig(Config):
         do_rezero: bool = True,
     ):
         self.vocab_size = vocab_size
-        self.embedding_dim = embedding_dim
+        self.embed_dim = embed_dim
         self.intermediate_dim = intermediate_dim
         self.cls_id = cls_id
         self.nmid_layers = nmid_layers
@@ -165,6 +165,6 @@ _T = TypeVar("_T")
 class EverythingConfig(Config, Generic[_T]):
     _attr_names: List[str] = Config._attr_names + ["trainer", "model"]
 
-    def __init__(self, trainer: TrainConfig, model: _T):
+    def __init__(self, trainer: TrainerConfig, model: _T):
         self.trainer = trainer
         self.model = model

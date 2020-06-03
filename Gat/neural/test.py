@@ -4,33 +4,60 @@ import torch
 from torch import nn
 from tqdm import tqdm
 
+from ..config import base as config
 from .layers import GraphMultiHeadAttention
 
 
 class TestGraphMultiHeadAttention:
     def setUp(self) -> None:
-        self.N = 13
-        self.E = 24
-        self.B = 3
-
+        gat_config = config.GATConfig(
+            embed_dim=12,
+            vocab_size=99,
+            intermediate_dim=99,
+            cls_id=99,
+            nmid_layers=99,
+            nheads=99,
+            nhid=99,
+            nedge_type=99,
+        )
+        trainer_config = config.TrainerConfig(
+            lr=1e-3,
+            epochs=99,
+            dataset_dir="99",
+            sent2graph_name="dep",
+            train_batch_size=3,
+            eval_batch_size=99,
+        )
+        self.all_config = config.EverythingConfig(
+            model=gat_config, trainer=trainer_config
+        )
+        self.seq_length = 13
         self.node_features: torch.FloatTensor = torch.randn(  # type: ignore
-            self.B, self.N, self.E, names=("B", "N", "E")
+            self.all_config.trainer.train_batch_size,
+            self.seq_length,
+            self.all_config.model.embed_dim,
+            names=("B", "N", "E"),
         )
 
         self.adj: torch.BoolTensor = torch.randn(  # type: ignore
-            self.B, self.N, self.N, names=("B", "N_left", "N_right")
+            self.all_config.trainer.train_batch_size,
+            self.seq_length,
+            self.seq_length,
+            names=("B", "N_left", "N_right"),
         ) > 1
         self.adj.rename(None)[
-            :, range(self.N), range(self.N)
+            :, range(self.seq_length), range(self.seq_length)
         ] = True  # Make sure all the self loops are there
 
         self.node_labels = T.cast(
-            torch.LongTensor, torch.zeros(self.B, self.N, dtype=torch.long, names=("B", "N"))  # type: ignore
+            torch.LongTensor, torch.zeros(self.all_config.trainer.train_batch_size, self.seq_length, dtype=torch.long, names=("B", "N"))  # type: ignore
         )
 
         # Name all the nodes of index less than self.N//2 with embedding_dim-1 ( so that the node
         # features can serve as logit inputs to cross entorpy)
-        self.node_labels[:, 0 : self.N // 2] = self.E - 1
+        self.node_labels[:, 0 : self.seq_length // 2] = (
+            self.all_config.model.embed_dim - 1
+        )
 
     def test_best_num_heads(self) -> None:
 
@@ -39,19 +66,19 @@ class TestGraphMultiHeadAttention:
 
         steps_to_converge_for_num_heads: T.Dict[int, int] = {}
         for num_heads in (2, 4, 6, 12):
-            head_size = self.E // num_heads
+            head_size = self.all_config.model.embed_dim // num_heads
             # Edge features are dependent on head size
             key_edge_features: torch.FloatTensor = torch.randn(  # type: ignore
-                self.B,
-                self.N,
-                self.N,
+                self.all_config.trainer.train_batch_size,
+                self.seq_length,
+                self.seq_length,
                 head_size,
                 names=("B", "N_left", "N_right", "head_size"),
                 requires_grad=True,
             )
 
             multihead_att = GraphMultiHeadAttention(
-                embed_dim=self.E,
+                embed_dim=self.all_config.model.embed_dim,
                 num_heads=num_heads,
                 include_edge_features=True,
                 edge_dropout_p=0.3,
