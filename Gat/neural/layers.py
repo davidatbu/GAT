@@ -21,7 +21,11 @@ else:
 
 class GraphMultiHeadSelfAttention(Module):
     def __init__(
-        self, embed_dim: int, num_heads: int, num_edge_types: int, dropout: float = 0.0,
+        self,
+        embed_dim: int,
+        num_heads: int,
+        include_edge_features: bool,
+        dropout: float = 0.0,
     ):
         """Why not use nn.MultiHeadAttention?
             1. Because it doesn't support graph like inputs.  Ie, it assumes
@@ -29,6 +33,8 @@ class GraphMultiHeadSelfAttention(Module):
             2. Because we are doing edge aware attention.
         """
         super().__init__()
+        self.embed_dim = embed_dim
+        self.include_edge_features = include_edge_features
         self.num_heads = num_heads
         self.head_size = embed_dim // num_heads
         if not self.head_size * num_heads == embed_dim:
@@ -40,36 +46,41 @@ class GraphMultiHeadSelfAttention(Module):
         self.W_out = nn.Linear(embed_dim, embed_dim)
         # Take advantage of PyTorch's state of the art initialization techniques
         # by taking weights from a linear layer
-        self.edge_values = nn.Parameter(
-            torch.zeros(  # type: ignore
-                num_edge_types, embed_dim, dtype=torch.float, names=("NumEdges", "E"),
-            )
-        )
-        nn.init.kaiming_uniform_(self.edge_values, nonlinearity="relu")  # type: ignore
-        # Used to incoprorate edge type to e_{ij}
-        self.edge_queries = nn.Parameter(
-            torch.zeros(  # type: ignore
-                num_edge_types, embed_dim, dtype=torch.float, names=("NumEdges", "E"),
-            )
-        )
-        nn.init.kaiming_uniform_(self.edge_queries, nonlinearity="relu")  # type: ignore
 
         self.softmax = nn.Softmax(
             dim="N_right"  # type: ignore
         )  # It will be softmaxing (B, N_left, N_right)
 
     def forward(
-        self, node_features: torch.FloatTensor, adj: torch.BoolTensor,
+        self,
+        adj: torch.BoolTensor,
+        node_features: torch.FloatTensor,
+        key_edge_features: T.Optional[torch.FloatTensor] = None,
+        value_edge_features: T.Optional[torch.FloatTensor] = None,
     ) -> torch.FloatTensor:
         """
         Shape:
             - Inputs:
-            - node_features: (B, N, E)
-            - adj: (B, N, N)
+            - adj: (B, N_left, N_right)
+                adj[b, i, j] means there's a directed edge from the j-th node to the i-th node of the b-th graph in the batch.
 
+                That means, node features of the j-th node will affect the calculation of the node features of the i-th node.
+            - node_features: (B, N, E)
+            - value_edge_features and key_edge_features: (B, N_left, N_right, head_size)
+                edge_features[b, i, j, :] are the features of the directed edge from the j-th node to the i-th node of the
+                b-th graph in the batch.
+
+                That means, this E long vector will affect e_{ji} and z_j
             - Outputs:
             - result: (B, N, E)
         """
+
+        if not self.include_edge_features and (
+            key_edge_features or value_edge_features
+        ):
+            raise Exception("Not insantiated to include edge features.")
+        if value_edge_features is not None:
+            raise Exception("passing in value_edge_features is not yet implemented")
 
         # Refine names because linear layer erases the E dim name
         Q: torch.FloatTensor = self.W_query(node_features).refine_names(..., "E")  # type: ignore
@@ -78,18 +89,39 @@ class GraphMultiHeadSelfAttention(Module):
 
         # Reshape using self.num_heads to compute probabilities headwize
         # Rename dim names to avoid N being duplicated in att_scores
-        # Look at shape of att_scores below for why each is either left or right
-        transed_Q = self._transpose_for_scores(Q).rename(N="N_left")  # type: ignore
-        transed_K = self._transpose_for_scores(K).rename(N="N_right")  # type: ignore
-        transed_V = self._transpose_for_scores(V).rename(N="N_right")  # type: ignore
+        transed_Q = self._transpose_for_scores(Q)
+        transed_K = self._transpose_for_scores(K)
+        transed_V = self._transpose_for_scores(V)
 
-        # Compute attnention probabilibby
+        # Compute node attention probability
         att_scores = torch.matmul(
-            transed_Q, transed_K.transpose("N_right", "head_size")
+            transed_Q.rename(N="N_left"),  # type: ignore
+            transed_K.rename(N="N_right").transpose("N_right", "head_size"),  # type: ignore
         )
         # att_scores: (B, head_size, N_left, N_right)
-        att_scores /= math.sqrt(self.head_size)
-        # Prepare  adj to broadT.cast to head wize
+
+        if key_edge_features is not None:
+            # Einstein notation used here .
+            # A little complicated because of batching dimension.
+            # Just keep in mind that:
+            ##############################################
+            # For edge_att_scores_{i,j} = dot_product(i-th query vector, with the edge feature of edge (j,i))
+            ##############################################
+            edge_att_scores = torch.einsum(  # type: ignore
+                # b is batch
+                # h is head number
+                # n is node number
+                # m is also node number
+                # d is dimension of head (head size)
+                "bhnd,bnmd->bhnm",
+                transed_Q.rename(None),
+                key_edge_features.rename(None),
+            ).rename("B", "num_heads", "N_left", "N_right")
+
+            att_scores = att_scores + edge_att_scores
+
+        att_scores /= math.sqrt(self.embed_dim)
+        # Prepare  adj to broadT.cast to head size
         adj = T.cast(
             torch.BoolTensor, adj.align_to("B", "num_heads", "N_left", "N_right")  # type: ignore
         )
@@ -97,15 +129,20 @@ class GraphMultiHeadSelfAttention(Module):
         neg_inf = torch.tensor(-float("inf"))
         att_scores_names = T.cast(
             T.Optional[T.List[T.Optional[str]]], att_scores.names
-        )  # I'm not sure why mypy needs this
-        att_scores = torch.where(
+        )  # I'm not sure why mypy needs this cast
+        att_scores = torch.where(  # type: ignore
             adj.rename(None), att_scores.rename(None), neg_inf
         ).rename(*att_scores_names)
         att_probs = self.softmax(att_scores)
+        # att_probs: (B, head_size, N_left, N_right)
 
-        # Again, head wize, combine values using attention
+        # Again combine values using attention
         new_node_features = torch.matmul(att_probs, transed_V)
         new_node_features = new_node_features.rename(N_left="N")  # type: ignore
+
+        if value_edge_features:
+            # Not yet implemented
+            pass
 
         # Reshape to concatenate the heads again
         new_node_features = new_node_features.transpose("num_heads", "N")
