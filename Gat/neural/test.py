@@ -51,7 +51,10 @@ class TestGraphMultiHeadAttention:
             )
 
             multihead_att = GraphMultiHeadAttention(
-                embed_dim=self.E, num_heads=num_heads, include_edge_features=True
+                embed_dim=self.E,
+                num_heads=num_heads,
+                include_edge_features=True,
+                edge_dropout_p=0.3,
             )
             adam = torch.optim.Adam(
                 # Include key_edge_features in features to be optimized

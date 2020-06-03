@@ -4,6 +4,7 @@ import typing as T
 
 import numpy as np
 import torch
+import typing_extensions as TT
 from torch import nn
 
 from ..config.base import GATConfig
@@ -25,7 +26,7 @@ class GraphMultiHeadAttention(Module):
         embed_dim: int,
         num_heads: int,
         include_edge_features: bool,
-        dropout: float = 0.0,
+        edge_dropout_p: float,
     ):
         """Why not use nn.MultiHeadAttention?
             1. Because it doesn't support graph like inputs.  Ie, it assumes
@@ -50,11 +51,12 @@ class GraphMultiHeadAttention(Module):
         self.softmax = nn.Softmax(
             dim="N_right"  # type: ignore
         )  # It will be softmaxing (B, N_left, N_right)
+        self.dropout = nn.Dropout(p=edge_dropout_p)
 
     def forward(
         self,
-        adj: torch.BoolTensor,
         node_features: torch.FloatTensor,
+        adj: torch.BoolTensor,
         key_edge_features: T.Optional[torch.FloatTensor] = None,
         value_edge_features: T.Optional[torch.FloatTensor] = None,
     ) -> torch.FloatTensor:
@@ -136,6 +138,10 @@ class GraphMultiHeadAttention(Module):
         att_probs = self.softmax(att_scores)
         # att_probs: (B, head_size, N_left, N_right)
 
+        # Apply dropout
+        names = att_probs.names
+        att_probs = self.dropout(att_probs.rename(None)).rename(*names)  # type: ignore
+
         # Again combine values using attention
         new_node_features = torch.matmul(att_probs, transed_V)
         new_node_features = new_node_features.rename(N_left="N")  # type: ignore
@@ -150,6 +156,9 @@ class GraphMultiHeadAttention(Module):
         new_node_features = new_node_features.flatten(("num_heads", "head_size"), "E")  # type: ignore
         # new_node_features: (B, N, E)
 
+        # Pass them through W_o finally
+        new_node_features = self.W_out(new_node_features).refine_names(..., "E")  # type: ignore
+
         return new_node_features  # type: ignore
 
     def _transpose_for_scores(self, W: torch.FloatTensor) -> torch.FloatTensor:
@@ -159,94 +168,6 @@ class GraphMultiHeadAttention(Module):
 
         # Returning  (B, num_heads, N, head_size)
         return W.transpose("N", "num_heads")  # type: ignore
-
-
-class OldDotProductAttHead(Module):
-    def __init__(
-        self,
-        config: GATConfig,
-        edge_k_embedding: nn.Embedding,
-        edge_v_embedding: nn.Embedding,
-    ) -> None:
-        super().__init__()
-        edge_dropout_p = config.edge_dropout_p
-        embedding_dim = config.embedding_dim
-        nhid = config.nhid
-
-        self.W_q = nn.Linear(embedding_dim, nhid)
-        self.W_k = nn.Linear(embedding_dim, nhid)
-        self.W_v = nn.Linear(
-            embedding_dim, nhid, bias=False
-        )  # Why have bias if the layer normalization will add?
-
-        self.edge_k_embedding = edge_k_embedding
-        self.edge_v_embedding = edge_v_embedding
-        self.nhid = nhid
-        self.softmax = nn.Softmax(dim=1)
-        self.edge_dropout = nn.Dropout(p=edge_dropout_p)
-
-    def forward(
-        self, input: torch.Tensor, adj: torch.Tensor, edge_type: torch.Tensor
-    ) -> torch.Tensor:
-
-        Q = self.W_q(input)
-        K = self.W_k(input)
-        V = self.W_v(input)
-
-        edge_k = self.edge_k_embedding(edge_type)
-
-        att_scores = Q @ K.t()
-
-        # This is such terrible coding practice, because it's so not obvious what's going on here.
-        # adjnonzero(as_tuple=True) should hopefully be of the same length as edge_k
-        att_scores[adj.nonzero(as_tuple=True)] += edge_k.view(-1)  # type: ignore
-
-        att_scores /= self.nhid
-
-        zero_vec = -9e15 * torch.ones_like(att_scores)
-        att_scores = torch.where(adj > 0, att_scores, zero_vec)
-        att_scores /= math.sqrt(self.nhid)
-        att_probs = self.softmax(att_scores)
-
-        h_prime = att_probs @ V
-
-        return h_prime
-
-
-class OldMultiHeadAtt(nn.Module):  # type: ignore
-    def __init__(self, config: GATConfig):
-        nhid = config.nhid
-        nheads = config.nheads
-        embedding_dim = config.embedding_dim
-        nedge_type = config.nedge_type
-
-        if not nhid * nheads == embedding_dim:
-            raise Exception("nhid * nheads != out_features")
-        super().__init__()
-
-        self.W_o = nn.Linear(embedding_dim, embedding_dim)
-
-        # THe +1 is because we might add an additional edge type
-        edge_k_embedding = nn.Embedding(nedge_type + 1, 1)
-        edge_v_embedding = nn.Embedding(nedge_type + 1, nhid)
-        self.attentions = nn.ModuleList(
-            [
-                OldDotProductAttHead(
-                    config,
-                    edge_k_embedding=edge_k_embedding,
-                    edge_v_embedding=edge_v_embedding,
-                )
-                for _ in range(nheads)
-            ]
-        )
-
-    def forward(
-        self, h: torch.Tensor, adj: torch.Tensor, edge_type: torch.Tensor
-    ) -> torch.Tensor:
-        lsatt_res = [att(h, adj, edge_type) for att in self.attentions]
-        h = torch.cat(lsatt_res, dim=1)
-        h = self.W_o(h)
-        return h
 
 
 class Rezero(nn.Module):  # type: ignore
@@ -295,18 +216,30 @@ class FeedForward(nn.Module):  # type: ignore
 
 
 class MultiHeadAttWrapper(nn.Module):  # type: ignore
-    def __init__(self, config: GATConfig):
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        include_edge_features: bool,
+        edge_dropout_p: float,
+        rezero_or_residual: TT.Literal["rezero", "residual"] = "rezero",
+    ):
         super().__init__()
 
-        multihead_att = OldMultiHeadAtt(config)
+        multihead_att = GraphMultiHeadAttention(
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            include_edge_features=True,
+            edge_dropout_p=edge_dropout_p,
+        )
 
         self.wrapper: nn.Module  # type: ignore
-        if config.do_rezero:
+        if rezero_or_residual == "rezero":
             self.wrapper = Rezero(layer=multihead_att)
+        elif rezero_or_residual == "residual":
+            self.wrapper = ResidualAndNorm(dim=embed_dim, layer=multihead_att)
         else:
-            self.wrapper = ResidualAndNorm(
-                dim=config.embedding_dim, layer=multihead_att
-            )
+            raise Exception('rezero_or_residual must be one of "rezero" or "residual"')
 
     def forward(self, h: torch.Tensor, **kwargs: T.Any) -> torch.Tensor:
         return self.wrapper(h, **kwargs)  # type: ignore
