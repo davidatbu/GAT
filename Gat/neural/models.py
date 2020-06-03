@@ -111,6 +111,10 @@ class GATModel(nn.Module):  # type: ignore
         return (lsedge, lsedge_type, lslsimp_node, nodeid2wordid, lsposition_id)
 
 
+class GATForUnorderedSeqPairClsf(GATModel):
+    raise NotImplementedError()
+
+
 class GATForSeqClsf(GATModel):
     def __init__(self, config: GATForSeqClsfConfig, emb_init: Optional[Tensor]) -> None:
         super().__init__(config, emb_init=emb_init)

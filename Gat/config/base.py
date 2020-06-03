@@ -15,9 +15,7 @@ class Config:
     _attr_names: List[str] = []
 
     @classmethod
-    def from_dict(
-        cls, d: Dict[str, Any]
-    ) -> Tuple[Union["TrainConfig", "GATForSeqClsfConfig"], Dict[str, Any]]:
+    def from_dict(cls, d: Dict[str, Any]) -> Tuple["Config", Dict[str, Any]]:
 
         d = d.copy()
         our_kwargs: Dict[str, Any] = {}
@@ -150,6 +148,7 @@ class GATConfig(Config):
 
     def validate(self) -> bool:
         return True
+
 
 class GATForSeqClsfConfig(GATConfig):
 
