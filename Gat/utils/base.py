@@ -1,41 +1,32 @@
 import base64
-from typing import Any
-from typing import Dict
-from typing import Iterable
-from typing import Iterator
-from typing import List
-from typing import NamedTuple
-from typing import Optional
-from typing import Tuple
-from typing import TypeVar
-from typing import Union
+import typing as T
 
 import numpy as np
 import plotly.figure_factory as ff  # type: ignore
 from bs4 import BeautifulSoup as BS  # type: ignore
 from bs4 import NavigableString
 
-Edge = Tuple[int, int]
-EdgeList = List[Edge]
+Edge = T.Tuple[int, int]
+EdgeList = T.List[Edge]
 Node = int
-NodeList = List[Node]
+NodeList = T.List[Node]
 EdgeType = int
-EdgeTypeList = List[EdgeType]
-Slice = Tuple[int, int]
+EdgeTypeList = T.List[EdgeType]
+Slice = T.Tuple[int, int]
 
 
-class SentGraph(NamedTuple):
+class SentGraph(T.NamedTuple):
     lsedge: EdgeList
     lsedge_type: EdgeTypeList
     lsimp_node: NodeList
-    nodeid2wordid: Optional[List[int]]
+    nodeid2wordid: T.Optional[T.List[int]]
 
     def __hash__(self) -> int:
         """Needed to use as a key in lru_cache"""
         nodeid2wordid = self.nodeid2wordid
         if nodeid2wordid is None:
             nodeid2wordid = []
-        to_hash: List[List[Any]] = [
+        to_hash: T.List[T.List[T.Any]] = [
             self.lsedge,
             self.lsedge_type,
             self.lsimp_node,
@@ -45,19 +36,19 @@ class SentGraph(NamedTuple):
         return hash(tuple(tuple(ls) for ls in to_hash))
 
 
-class SentExample(NamedTuple):
-    lssent: List[str]
+class SentExample(T.NamedTuple):
+    lssent: T.List[str]
     lbl: str
 
 
-class SentgraphExample(NamedTuple):
-    lssentgraph: List[SentGraph]
+class SentgraphExample(T.NamedTuple):
+    lssentgraph: T.List[SentGraph]
     lbl_id: int
 
 
-def to_undirected(lsedge_index: List[Edge]) -> List[Edge]:
+def to_undirected(lsedge_index: T.List[Edge]) -> T.List[Edge]:
     # type ignore is cuz mypy can't figure out the length of a sorted list doesn't change
-    directed_edge_index: List[Edge] = sorted(
+    directed_edge_index: T.List[Edge] = sorted(
         set([tuple(sorted(e)) for e in lsedge_index])  # type: ignore
     )
     undirected_edge_index = directed_edge_index + [
@@ -66,8 +57,8 @@ def to_undirected(lsedge_index: List[Edge]) -> List[Edge]:
     return undirected_edge_index
 
 
-def sorted_directed(lsedge: List[Edge]) -> List[Edge]:
-    dict_edge: Dict[Node, Node] = {}
+def sorted_directed(lsedge: T.List[Edge]) -> T.List[Edge]:
+    dict_edge: T.Dict[Node, Node] = {}
     for node1, node2 in lsedge:
         if node1 > node2:
             node2, node1 = node1, node2
@@ -75,10 +66,10 @@ def sorted_directed(lsedge: List[Edge]) -> List[Edge]:
     return list(dict_edge.items())
 
 
-_T = TypeVar("_T")
+_T = T.TypeVar("_T")
 
 
-def grouper(iterable: Iterable[_T], n: int) -> Iterator[List[_T]]:
+def grouper(iterable: T.Iterable[_T], n: int) -> T.Iterator[T.List[_T]]:
 
     cur_batch = []
     for i, item in enumerate(iter(iterable), start=1):
@@ -88,13 +79,13 @@ def grouper(iterable: Iterable[_T], n: int) -> Iterator[List[_T]]:
             cur_batch = []
 
 
-def is_seq(item: Any) -> bool:
+def is_seq(item: T.Any) -> bool:
     if isinstance(item, (list, tuple)):
         return True
     return False
 
 
-def flatten(ls: Iterable[Any]) -> Iterator[Any]:
+def flatten(ls: T.Iterable[T.Any]) -> T.Iterator[T.Any]:
     for i in ls:
         if is_seq(i):
             for j in flatten(i):
@@ -103,12 +94,12 @@ def flatten(ls: Iterable[Any]) -> Iterator[Any]:
             yield i
 
 
-def reshape_like(to_reshape: Iterable[Any], model: Any) -> Tuple[Any, int]:
+def reshape_like(to_reshape: T.Iterable[T.Any], model: T.Any) -> T.Tuple[T.Any, int]:
     flat = flatten(to_reshape)
     return _reshape_like(flat, model)
 
 
-def _reshape_like(flat: Iterator[Any], model: Any) -> Tuple[Any, int]:
+def _reshape_like(flat: T.Iterator[T.Any], model: T.Any) -> T.Tuple[T.Any, int]:
 
     consumed = 0
     reshaped = []
@@ -123,6 +114,19 @@ def _reshape_like(flat: Iterator[Any], model: Any) -> Tuple[Any, int]:
         reshaped.append(child_reshaped)
 
     return reshaped, consumed
+
+
+def pad_lslsid(
+    lslsid: T.List[T.List[int]], padding_tok_id: int, max_len: T.Optional[int] = None,
+) -> T.List[T.List[int]]:
+    if max_len is None:
+        max_len = max(map(len, lslsid))
+
+    new_lsid = [
+        lsid[:max_len] + [padding_tok_id] * max(0, max_len - len(lsid))
+        for lsid in lslsid
+    ]
+    return new_lsid
 
 
 class Cell:
@@ -142,7 +146,7 @@ class TextCell(Cell):
 
 
 class NumCell(Cell):
-    def __init__(self, content: Union[int, float]):
+    def __init__(self, content: T.Union[int, float]):
         self._content = content
 
     def sp(self, root_sp: BS) -> BS:
@@ -176,9 +180,9 @@ class SvgCell(Cell):
 
 
 def html_table(
-    rows: List[Tuple[Cell, ...]],
-    headers: Tuple[Cell, ...],
-    row_colors: List[Optional[str]] = [],
+    rows: T.List[T.Tuple[Cell, ...]],
+    headers: T.Tuple[Cell, ...],
+    row_colors: T.List[T.Optional[str]] = [],
 ) -> str:
     root_sp: BS = BS("<html><table></table></html>", "lxml")
     table_sp: BS = root_sp.find("table")
@@ -195,7 +199,7 @@ def html_table(
         row_colors = [None] * len(rows)
     for color, row in zip(row_colors, rows):
         if color:
-            attrs: Dict[str, str] = {"style": f"color: {color}"}
+            attrs: T.Dict[str, str] = {"style": f"color: {color}"}
         else:
             attrs = {}
 
@@ -210,8 +214,8 @@ def html_table(
 
 
 def plotly_cm(
-    cm: np.ndarray, labels: List[str], title: str = "Confusion matrix"
-) -> Any:
+    cm: np.ndarray, labels: T.List[str], title: str = "Confusion matrix"
+) -> T.Any:
 
     # change each element of z to type string for annotations
     scaled = cm * 100 / cm.sum()
