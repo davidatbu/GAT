@@ -1,6 +1,5 @@
+import abc
 import logging
-from abc import ABC
-from abc import abstractmethod
 from typing import Dict
 from typing import List
 from typing import TypeVar
@@ -15,25 +14,25 @@ logger = logging.getLogger("__main__")
 V = TypeVar("V")
 
 
-class SentenceToGraph(ABC):
+class SentenceToGraph(abc.ABC):
     @property
-    @abstractmethod
+    @abc.abstractmethod
     def id2edge_type(self) -> List[str]:
         pass
 
     @property
-    @abstractmethod
+    @abc.abstractmethod
     def edge_type2id(self) -> Dict[str, int]:
         pass
 
-    @abstractmethod
+    @abc.abstractmethod
     def __repr__(self) -> str:
         pass
 
     def batch_to_graph(self, lslsword: List[List[str]]) -> List[SentGraph]:
         return [self.to_graph(lsword) for lsword in lslsword]
 
-    @abstractmethod
+    @abc.abstractmethod
     def to_graph(self, lsword: List[str]) -> SentGraph:
         pass
 

@@ -1,24 +1,17 @@
-from typing import Any
-from typing import Dict
-from typing import Generic
-from typing import List
-from typing import Optional
-from typing import Tuple
-from typing import TypeVar
-from typing import Union
+import typing as T
 
-from typing_extensions import Literal
+import typing_extensions as TT
 
 
 class Config:
 
-    _attr_names: List[str] = []
+    _attr_names: T.List[str] = []
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> Tuple["Config", Dict[str, Any]]:
+    def from_dict(cls, d: T.Dict[str, T.Any]) -> T.Tuple["Config", T.Dict[str, T.Any]]:
 
         d = d.copy()
-        our_kwargs: Dict[str, Any] = {}
+        our_kwargs: T.Dict[str, T.Any] = {}
         for _attr_names in list(
             d.keys()
         ):  # Hopefully list() copies, cuz otherwise we'll be modifying dictwhile loping thorugh
@@ -28,7 +21,7 @@ class Config:
         return cls(**our_kwargs), d  # type: ignore
 
     def __setattr__(
-        self, n: str, v: Optional[Union["Config", int, float, str]]
+        self, n: str, v: T.Optional[T.Union["Config", int, float, str]]
     ) -> None:
         if n not in self._attr_names:
             raise Exception(
@@ -42,8 +35,8 @@ class Config:
     def __str__(self) -> str:
         return str(self.as_dict())
 
-    def as_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {}
+    def as_dict(self) -> T.Dict[str, T.Any]:
+        d: T.Dict[str, T.Any] = {}
         for k, v in self.__dict__.items():
             if isinstance(v, Config):
                 d[k] = v.as_dict()
@@ -57,27 +50,29 @@ class Config:
 
 class TrainerConfig(Config):
 
-    _attr_names: List[str] = [
+    _attr_names: T.List[str] = [
         "lr",
         "epochs",
         "train_batch_size",
         "eval_batch_size",
         "do_eval_every_epoch",
+        "do_eval_on_truncated_train_set",
         "use_cuda",
         "dataset_dir",
         "sent2graph_name",
-    ]
+    ] + Config._attr_names
 
     def __init__(
         self,
         lr: float,
         epochs: int,
         dataset_dir: str,
-        sent2graph_name: Literal["dep", "srl"],
+        sent2graph_name: TT.Literal["dep", "srl"],
         train_batch_size: int,
         eval_batch_size: int,
         use_cuda: bool = True,
         do_eval_every_epoch: bool = True,
+        do_eval_on_truncated_train_set: bool = True,
     ):
         self.lr = lr
         self.use_cuda = use_cuda
@@ -87,64 +82,69 @@ class TrainerConfig(Config):
         self.eval_batch_size = eval_batch_size
         self.train_batch_size = train_batch_size
         self.dataset_dir = dataset_dir
+        self.do_eval_on_truncated_train_set = do_eval_on_truncated_train_set
 
 
 class GATConfig(Config):
 
-    _attr_names: List[str] = [
+    _attr_names: T.List[str] = [
+        "embedder_type",
         "vocab_size",
         "embed_dim",
+        "embedder_config",
         "intermediate_dim",
         "cls_id",
         "nmid_layers",
         "nhid",
-        "nheads",
+        "num_heads",
         "final_conat",
         "batch_norm",
         "edge_dropout_p",
         "feat_dropout_p",
         "alpha",
         "undirected",
-        "do_layer_norm",
         "nedge_type",
-        "do_rezero",
-    ]
+        "include_edge_features" "rezero_or_residual",
+    ] + Config._attr_names
 
     def __init__(
         self,
         vocab_size: int,
         embed_dim: int,
+        embedder_type: TT.Literal["bert", "simple"],
         intermediate_dim: int,
         cls_id: int,
         nmid_layers: int,
         nhid: int,
-        nheads: int,
+        num_heads: int,
         nedge_type: int,
         final_conat: bool = True,
         batch_norm: bool = True,
         edge_dropout_p: float = 0.0,
         feat_dropout_p: float = 0.3,
         alpha: float = 0.2,
-        do_layer_norm: bool = True,
         undirected: bool = True,
-        do_rezero: bool = True,
+        include_edge_features: bool = True,
+        rezero_or_residual: TT.Literal["rezero", "residual"] = "rezero",
     ):
-        self.vocab_size = vocab_size
         self.embed_dim = embed_dim
+        self.vocab_size = vocab_size
+        self.embedder_type = embedder_type
+
         self.intermediate_dim = intermediate_dim
         self.cls_id = cls_id
         self.nmid_layers = nmid_layers
         self.nhid = nhid
-        self.nheads = nheads
+        self.num_heads = num_heads
         self.nedge_type = nedge_type
         self.final_conat = final_conat
         self.batch_norm = batch_norm
         self.edge_dropout_p = edge_dropout_p
         self.feat_dropout_p = feat_dropout_p
         self.alpha = alpha
-        self.do_layer_norm = do_layer_norm
         self.undirected = undirected
-        self.do_rezero = do_rezero
+        self.include_edge_features = include_edge_features
+        self.rezero_or_residual = rezero_or_residual
 
     def validate(self) -> bool:
         return True
@@ -152,18 +152,18 @@ class GATConfig(Config):
 
 class GATForSeqClsfConfig(GATConfig):
 
-    _attr_names: List[str] = GATConfig._attr_names + ["nclass"]
+    _attr_names: T.List[str] = GATConfig._attr_names + ["nclass"]
 
-    def __init__(self, nclass: int, **kwargs: Any):
+    def __init__(self, nclass: int, **kwargs: T.Any):
         super().__init__(**kwargs)
         self.nclass = nclass
 
 
-_T = TypeVar("_T")
+_T = T.TypeVar("_T")
 
 
-class EverythingConfig(Config, Generic[_T]):
-    _attr_names: List[str] = Config._attr_names + ["trainer", "model"]
+class EverythingConfig(Config, T.Generic[_T]):
+    _attr_names: T.List[str] = Config._attr_names + ["trainer", "model"]
 
     def __init__(self, trainer: TrainerConfig, model: _T):
         self.trainer = trainer

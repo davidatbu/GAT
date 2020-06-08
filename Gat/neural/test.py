@@ -11,7 +11,7 @@ from .layers import GraphMultiHeadAttention
 class TestGraphMultiHeadAttention:
     def setUp(self) -> None:
         gat_config = config.GATConfig(
-            embed_dim=12,
+            embed_dim=768,
             vocab_size=99,
             intermediate_dim=99,
             cls_id=99,
@@ -24,7 +24,7 @@ class TestGraphMultiHeadAttention:
             lr=1e-3,
             epochs=99,
             dataset_dir="99",
-            sent2graph_name="dep",
+            sent2graph_name="99",  # type: ignore
             train_batch_size=3,
             eval_batch_size=99,
         )
@@ -37,27 +37,23 @@ class TestGraphMultiHeadAttention:
             self.seq_length,
             self.all_config.model.embed_dim,
             names=("B", "N", "E"),
-        )
+        ).cuda()
 
         self.adj: torch.BoolTensor = torch.randn(  # type: ignore
             self.all_config.trainer.train_batch_size,
             self.seq_length,
             self.seq_length,
             names=("B", "N_left", "N_right"),
-        ) > 1
+        ).cuda() > 1
         self.adj.rename(None)[
             :, range(self.seq_length), range(self.seq_length)
         ] = True  # Make sure all the self loops are there
 
         self.node_labels = T.cast(
             torch.LongTensor, torch.zeros(self.all_config.trainer.train_batch_size, self.seq_length, dtype=torch.long, names=("B", "N"))  # type: ignore
-        )
+        ).cuda()
 
-        # Name all the nodes of index less than self.N//2 with embedding_dim-1 ( so that the node
-        # features can serve as logit inputs to cross entorpy)
-        self.node_labels[:, 0 : self.seq_length // 2] = (
-            self.all_config.model.embed_dim - 1
-        )
+        self.node_labels.rename(None)[:, range(13)] = torch.tensor(range(13)).cuda()
 
     def test_best_num_heads(self) -> None:
 
@@ -65,7 +61,7 @@ class TestGraphMultiHeadAttention:
         n_steps = 5000
 
         steps_to_converge_for_num_heads: T.Dict[int, int] = {}
-        for num_heads in (2, 4, 6, 12):
+        for num_heads in (2, 4, 12, 64, 384):
             head_size = self.all_config.model.embed_dim // num_heads
             # Edge features are dependent on head size
             key_edge_features: torch.FloatTensor = torch.randn(  # type: ignore
@@ -75,6 +71,7 @@ class TestGraphMultiHeadAttention:
                 head_size,
                 names=("B", "N_left", "N_right", "head_size"),
                 requires_grad=True,
+                device="cuda",
             )
 
             multihead_att = GraphMultiHeadAttention(
@@ -83,6 +80,7 @@ class TestGraphMultiHeadAttention:
                 include_edge_features=True,
                 edge_dropout_p=0.3,
             )
+            multihead_att.cuda()
             adam = torch.optim.Adam(
                 # Include key_edge_features in features to be optimized
                 [key_edge_features] + list(multihead_att.parameters()),  # type:ignore
@@ -110,7 +108,7 @@ class TestGraphMultiHeadAttention:
         print(
             "converged for heads: "
             + " | ".join(
-                f"num_heads: {num_heads}, step: {step}"
+                f"num_heads: {num_heads}, step: {steps}"
                 for num_heads, steps in steps_to_converge_for_num_heads.items()
             )
         )

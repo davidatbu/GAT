@@ -26,13 +26,13 @@ from .base import SentenceToGraph
 
 logger = logging.getLogger("__main__")
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # painful type checking
     task_queue_t = Queue[Tuple[int, Union[Dict[str, Any], Literal["STOP"]]]]
     done_queue_t = Queue[Tuple[int, SentGraph]]
 else:
     task_queue_t = done_queue_t = Queue
 
-# I'm brekaing my own laws by using globals here. an FYI for future me.
+# Belongs better in SRLSentenceToGraph, but to amek it easy to use multiprocessing later, we have it as global
 _id2role: List[str] = [
     "ARG0",
     "ARG1",
@@ -115,7 +115,7 @@ class SRLSentenceToGraph(SentenceToGraph):
         return _role2id
 
     def __init__(self, use_workers: bool = True) -> None:
-        
+
         self.use_workers = use_workers
 
     def init_workers(self) -> None:
@@ -134,7 +134,7 @@ class SRLSentenceToGraph(SentenceToGraph):
         self.done_queue: done_queue_t = Queue()
 
         if self.use_workers:
-            self.num_workers = 30
+            self.num_workers = 20
             for i in range(self.num_workers):
                 Process(
                     target=_srl_resp_to_graph_worker,

@@ -11,39 +11,63 @@ from torch import Tensor
 
 from ..config.base import GATConfig
 from ..config.base import GATForSeqClsfConfig
+from ..neural import layers
 from ..utils.base import Edge
 from ..utils.base import EdgeType
 from ..utils.base import Node
 from ..utils.base import SentGraph
-from .layers import EmbeddingWrapper
-from .layers import FeedForwardWrapper
-from .layers import MultiHeadAttWrapper
 
 
 class GATLayered(nn.Module):  # type: ignore
     def __init__(self, config: GATConfig, emb_init: Optional[Tensor]):
         super().__init__()
 
-        self.emb_wrapper = EmbeddingWrapper(config, emb_init)
+        self.token_embedder = layers.Embedder()  # type: ignore # TODO
+        self.key_edge_embedder = layers.Embedder()  # type: ignore # TODO
+        self.positional_embedder = layers.PositionalEmbedder(config.embed_dim)
         self.lsmultihead_att_wrapper = nn.ModuleList(
-            [MultiHeadAttWrapper(config) for _ in range(config.nmid_layers)]
+            [
+                layers.GraphMultiHeadAttentionWrapped(
+                    embed_dim=config.embed_dim,
+                    num_heads=config.num_heads,
+                    include_edge_features=config.include_edge_features,
+                    edge_dropout_p=config.edge_dropout_p,
+                    rezero_or_residual=config.rezero_or_residual,
+                )
+                for _ in range(config.nmid_layers)
+            ]
         )
         self.lsfeed_forward_wrapper = nn.ModuleList(
-            [FeedForwardWrapper(config) for _ in range(config.nmid_layers)]
+            [
+                layers.FeedForwardWrapped(
+                    in_out_dim=config.embed_dim,
+                    intermediate_dim=config.intermediate_dim,
+                    rezero_or_residual=config.rezero_or_residual,
+                    feat_dropout_p=config.feat_dropout_p,
+                )
+                for _ in range(config.nmid_layers)
+            ]
         )
 
     def forward(
-        self, word_ids: Tensor, position_ids: Tensor, adj: Tensor, edge_type: Tensor
+        self, word_ids: Tensor, position_ids: Tensor, adj: Tensor, edge_types: Tensor
     ) -> Tensor:
-        h = self.emb_wrapper(word_ids, position_ids)
+        node_features = self.token_embedder(word_ids)
+        node_features = node_features + self.positional_embedder(word_ids)
+        key_edge_features = self.key_edge_embedder(edge_types)
 
         for multihead_att_wrapper, feed_forward_wrapper in zip(
             self.lsmultihead_att_wrapper, self.lsfeed_forward_wrapper
         ):
-            h = multihead_att_wrapper(h=h, adj=adj, edge_type=edge_type)
-            h = feed_forward_wrapper(h=h)
+            node_features = multihead_att_wrapper(
+                node_features=node_features,
+                adj=adj,
+                key_edge_features=key_edge_features,
+            )
 
-        return h  # type: ignore
+            node_features = feed_forward_wrapper(node_features=node_features)
+
+        return node_features
 
 
 class GATModel(nn.Module):  # type: ignore
@@ -118,11 +142,11 @@ class GATForUnorderedSeqPairClsf(GATModel):
 class GATForSeqClsf(GATModel):
     def __init__(self, config: GATForSeqClsfConfig, emb_init: Optional[Tensor]) -> None:
         super().__init__(config, emb_init=emb_init)
-        embedding_dim = config.embedding_dim
+        embed_dim = config.embed_dim
         nclass = config.nclass
         feat_dropout_p = config.feat_dropout_p
 
-        self.linear = nn.Linear(embedding_dim, nclass)
+        self.linear = nn.Linear(embed_dim, nclass)
         self.dropout = nn.Dropout(p=feat_dropout_p)
         self.crs_entrpy = nn.CrossEntropyLoss()
 

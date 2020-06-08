@@ -1,8 +1,8 @@
+import abc
 import logging
+import pprint
 import random
 import typing as T
-from pathlib import Path
-from pprint import pformat
 
 import numpy as np
 import sklearn.metrics as skmetrics
@@ -12,97 +12,68 @@ import torch.optim as optim
 from sklearn.metrics import confusion_matrix
 from torch import Tensor
 from torch.utils.data import DataLoader
-from torch.utils.data import Dataset
 from torch.utils.tensorboard import SummaryWriter  # type: ignore
 from tqdm import tqdm
 
 import wandb  # type: ignore
-from Gat.config import base as config
-from Gat.data import base as data
-from Gat.neural import models
-from Gat.utils import base as utils
-
+from ..config import base as config
+from ..data import base as data
+from ..neural import models
+from ..utils import base as utils
 
 logger = logging.getLogger("__main__")
+
 
 random.seed(0)
 np.random.seed(0)
 torch.manual_seed(0)  # type: ignore
 
-_T = T.TypeVar("_T")
+_ValueType = T.TypeVar("_ValueType")
 
 
-def _prefix_keys(d: T.Dict[str, _T], prefix: str) -> T.Dict[str, _T]:
+def _prefix_keys(d: T.Dict[str, _ValueType], prefix: str) -> T.Dict[str, _ValueType]:
     return {f"{prefix}_{k}": v for k, v in d.items()}
 
 
-_ExampleType = T.TypeVar("_ExampleType")
+_T = T.TypeVar("_T")
 
 
-class Trainer(T.Generic[_ExampleType]):
-    def __init__(self, train_config: config.TrainerConfig) -> None:
-        self.config = train_config
+class Trainer(T.Generic[_T], abc.ABC):
+    """This is influenced by PyTorch lightning"""
+
+    def __init__(self, trainer_config: config.TrainerConfig) -> None:
+        self.config = trainer_config
         self._prepare_data()
 
+    @abc.abstractmethod
     def _prepare_data(self) -> None:
-        self._val_name = "dev"
-        datasets, txt_srcs, vocab = data.load_splits(
-            Path(self.config.dataset_dir),
-            sent2graph_name=self.config.sent2graph_name,
-            lstxt_col=["sentence"],
-            splits=["train", self._val_name],
-        )
+        pass
 
-        self._datasets = datasets
-        self._txt_srcs = txt_srcs
-        self._vocab = vocab
+    @abc.abstractproperty
+    def train_dataloader(self) -> DataLoader[T.Tuple[torch.Tensor, torch.Tensor]]:
+        pass
 
-    @property
-    def train_dataset(self) -> Dataset[_ExampleType]:
-        return self._datasets["train"]
-
-    @property
-    def val_dataset(self) -> _Dataset:
-        return self._datasets[self._val_name]
-
-    @property
-    def vocab(self) -> data.Vocab:
-        return self._vocab
+    @abc.abstractproperty
+    def val_dataloader(self) -> DataLoader[T.Tuple[torch.Tensor, torch.Tensor]]:
+        pass
 
     def train(self, model: models.GATForSeqClsf,) -> None:
         # Model and optimizer
         if self.config.use_cuda:
             model.cuda()
 
-        train_dataset, val_dataset = (
-            self._datasets["train"],
-            self._datasets[self._val_name],
-        )
-
         # wandb.watch(model)  # Watch the gradients
         # Get the computational graph
         with SummaryWriter(log_dir=wandb.run.dir) as tb_writer:
-            loader = DataLoader(
-                self.train_dataset,
-                batch_size=self.config.train_batch_size,
-                collate_fn=data.SentenceGraphDataset.collate_fn,
-            )
-            X, y = next(iter(loader))
-            prepared_X = model.prepare_batch(X)
-            tb_writer.add_graph(model, (prepared_X,))
+            X, y = next(iter(self.train_dataloader))
+            tb_writer.add_graph(model, (X, y))
 
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=self.config.train_batch_size,
-            collate_fn=data.SentenceGraphDataset.collate_fn,
-        )
         optimizer = optim.Adam(model.parameters(), lr=self.config.lr)
 
         examples_seen = 0
         batches_seen = 0
 
-        train_dataset_slice = data.SliceDataset(train_dataset, n=len(val_dataset))
-        val_metrics, _, _ = self.evaluate(model, val_dataset)
+        val_metrics, _, _ = self._evaluate(model, self.val_dataloader)
         val_metrics = _prefix_keys(val_metrics, "val")
         logger.info(f"Before training | val: {val_metrics}")
         running_loss = torch.tensor(
@@ -110,7 +81,7 @@ class Trainer(T.Generic[_ExampleType]):
         )
         for epoch in range(1, self.config.epochs + 1):
             pbar_desc = f"epoch: {epoch}"
-            pbar = tqdm(train_loader, desc=pbar_desc)
+            pbar = tqdm(self.train_dataloader, desc=pbar_desc)
             for X, y in pbar:
                 prepared_X = model.prepare_batch(X)
                 running_loss += train_one_step(model, optimizer, prepared_X, y)
@@ -121,15 +92,17 @@ class Trainer(T.Generic[_ExampleType]):
                 )
 
             if self.config.do_eval_every_epoch:
-                val_metrics, val_logits, val_true = self.evaluate(model, val_dataset)
-                train_metrics, _, _ = self.evaluate(model, train_dataset_slice)
+                val_metrics, val_logits, val_true = self._evaluate(
+                    model, self.val_dataloader
+                )
+                train_metrics, _, _ = self._evaluate(model, train_dataset_slice)
 
                 all_metrics = dict(
                     **_prefix_keys(val_metrics, "val"),
                     **_prefix_keys(train_metrics, "train"),
                 )
                 wandb.log(all_metrics, step=examples_seen)
-                logger.info(pformat(all_metrics))
+                logger.info(pprint.pformat(all_metrics))
 
         if not self.config.do_eval_every_epoch:
             val_metrics, val_logits, val_true = self.evaluate(model, val_dataset)
@@ -142,7 +115,7 @@ class Trainer(T.Generic[_ExampleType]):
 
         # Computed in either the for loop or after the for loop
         wandb.log(all_metrics)
-        logger.info(pformat(all_metrics))
+        logger.info(pprint.pformat(all_metrics))
 
         self.analyze_predict(
             logits=val_logits,
@@ -151,15 +124,11 @@ class Trainer(T.Generic[_ExampleType]):
             txt_src=self._txt_srcs[self._val_name],
         )
 
-    def evaluate(
-        self, model: models.GATForSeqClsf, dataset: Dataset  # type: ignore
+    def _evaluate(
+        self,
+        model: models.GATForSeqClsf,
+        dataloader: DataLoader[T.Tuple[torch.Tensor, torch.Tensor]],
     ) -> T.Tuple[T.Dict[str, float], np.ndarray, np.ndarray]:
-
-        val_loader = DataLoader(
-            dataset,
-            batch_size=self.config.eval_batch_size,
-            collate_fn=data.SentenceGraphDataset.collate_fn,
-        )
 
         model.eval()
         with torch.no_grad():
@@ -168,7 +137,9 @@ class Trainer(T.Generic[_ExampleType]):
             )
             all_logits: T.Optional[np.ndarray] = None
             all_true: T.Optional[np.ndarray] = None
-            for X, y in val_loader:
+            num_val_examples = 0
+            for X, y in dataloader:
+                num_val_examples += 1
                 prepared_X = model.prepare_batch(X)
                 logits, one_step_loss = model(prepared_X=prepared_X, y=y)
                 loss += one_step_loss
@@ -184,7 +155,7 @@ class Trainer(T.Generic[_ExampleType]):
 
         all_preds = np.argmax(all_logits, axis=1)
         acc: float = skmetrics.accuracy_score(all_true, all_preds)
-        loss /= len(val_loader)
+        loss /= num_val_examples
         metrics = {
             "loss": float(loss.item()),
             "acc": acc,

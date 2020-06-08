@@ -1,3 +1,4 @@
+import abc
 import logging
 import math
 import typing as T
@@ -7,7 +8,7 @@ import torch
 import typing_extensions as TT
 from torch import nn
 
-from ..config.base import GATConfig
+from ..data import base as data
 
 logger = logging.getLogger("__main__")
 
@@ -52,6 +53,7 @@ class GraphMultiHeadAttention(Module):
             dim="N_right"  # type: ignore
         )  # It will be softmaxing (B, N_left, N_right)
         self.dropout = nn.Dropout(p=edge_dropout_p)
+        self.register_buffer("neg_infinity", torch.tensor(-float("inf")))
 
     def forward(
         self,
@@ -114,7 +116,8 @@ class GraphMultiHeadAttention(Module):
                 # h is head number
                 # n is node number
                 # m is also node number
-                # d is dimension of head (head size)
+                # d is dimension of head (head size). This is the dimension that's being summed over
+                # TODO: Look at doing this with BLAS operations, or may be even tensordot works bfaster than einsum
                 "bhnd,bnmd->bhnm",
                 transed_Q.rename(None),
                 key_edge_features.rename(None),
@@ -128,12 +131,11 @@ class GraphMultiHeadAttention(Module):
             torch.BoolTensor, adj.align_to("B", "num_heads", "N_left", "N_right")  # type: ignore
         )
         # Inject the graph structure by setting non existent edges' scores to negative infinity
-        neg_inf = torch.tensor(-float("inf"))
         att_scores_names = T.cast(
             T.Optional[T.List[T.Optional[str]]], att_scores.names
         )  # I'm not sure why mypy needs this cast
         att_scores = torch.where(  # type: ignore
-            adj.rename(None), att_scores.rename(None), neg_inf
+            adj.rename(None), att_scores.rename(None), self.neg_infinity  # type: ignore
         ).rename(*att_scores_names)
         att_probs = self.softmax(att_scores)
         # att_probs: (B, head_size, N_left, N_right)
@@ -199,10 +201,14 @@ class ResidualAndNorm(nn.Module):  # type: ignore
 
 class FeedForward(nn.Module):  # type: ignore
     def __init__(
-        self, in_out_dim: int, intermediate_dim: int, out_bias: bool, dropout_p: float
+        self,
+        in_out_dim: int,
+        intermediate_dim: int,
+        out_bias: bool,
+        feat_dropout_p: float,
     ):
         super().__init__()
-        self.dropout = nn.Dropout(dropout_p)
+        self.dropout = nn.Dropout(feat_dropout_p)
         self.W1 = nn.Linear(in_out_dim, intermediate_dim, bias=True)
         self.relu = nn.ReLU()
         self.W2 = nn.Linear(intermediate_dim, in_out_dim, bias=out_bias)
@@ -255,81 +261,145 @@ class GraphMultiHeadAttentionWrapped(nn.Module):  # type: ignore
         )
 
 
-class FeedForwardWrapper(nn.Module):  # type: ignore
-    def __init__(self, config: GATConfig):
+class FeedForwardWrapped(nn.Module):  # type: ignore
+    def __init__(
+        self,
+        in_out_dim: int,
+        intermediate_dim: int,
+        feat_dropout_p: float,
+        rezero_or_residual: TT.Literal["rezero", "residual"],
+    ):
         super().__init__()
 
         out_bias = True
-        if config.do_layer_norm:
+        if rezero_or_residual == "residual":
             out_bias = False
         ff = FeedForward(
-            in_out_dim=config.embedding_dim,
-            intermediate_dim=config.intermediate_dim,
+            in_out_dim=in_out_dim,
+            intermediate_dim=intermediate_dim,
             out_bias=out_bias,
-            dropout_p=config.feat_dropout_p,
+            feat_dropout_p=feat_dropout_p,
         )
 
-        self.wrapper: nn.Module  # type: ignore
-        if config.do_rezero:
+        self.wrapper: Module
+        if rezero_or_residual == "rezero":
             self.wrapper = Rezero(layer=ff)
+        elif rezero_or_residual == "residual":
+            self.wrapper = ResidualAndNorm(dim=in_out_dim, layer=ff)
         else:
-            self.wrapper = ResidualAndNorm(dim=config.embedding_dim, layer=ff)
+            raise Exception('rezero_or_residual must be one of "rezero" or "residual"')
 
-    def forward(self, h: torch.Tensor, **kwargs: T.Any) -> torch.Tensor:
-        return self.wrapper(h, **kwargs)  # type: ignore
+    def forward(self, node_features: torch.Tensor) -> torch.Tensor:
+        return self.wrapper(node_features)
 
 
-class EmbeddingWrapper(nn.Module):  # type: ignore
-    def __init__(self, config: GATConfig, emb_init: T.Optional[torch.Tensor]):
+class Embedder(Module, abc.ABC):
+    @abc.abstractmethod
+    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            token_ids: (B, L)
+        Returns:
+            embs: (B, L, E)
+        """
+        pass
+
+    @abc.abstractproperty
+    def embed_dim(self) -> int:
+        pass
+
+
+class TokenizingReconciler(Module):
+    def __init__(
+        self,
+        sub_word_vocab: data.Vocab,
+        word_vocab: data.Vocab,
+        sub_word_embedder: Embedder,
+        word_embedder: Embedder,
+        sub_word_max_tokens_per_seq: int,
+    ) -> None:
+        """Given
+            1. two tokenizations (for example, BERT's WordPiece, and Spacy's regular vocab),
+            2. the token vectors for the sub word tokenization,
+           Do min pooling over the subtokens.
+        """
         super().__init__()
+        self.sub_word_vocab = sub_word_vocab
+        self.word_vocab = word_vocab
+        self.sub_word_embedder = sub_word_embedder
+        self.word_embedder = word_embedder
+        self.sub_word_max_tokens_per_seq = sub_word_max_tokens_per_seq
 
-        self.embedding = nn.Embedding(
-            num_embeddings=config.vocab_size,
-            embedding_dim=config.embedding_dim,
-            padding_idx=0,
-        )
-        self.position_embedding = PositionEmbedding(config)
+    def forward(self, lstxt: T.List[str]) -> torch.Tensor:
+        """
+        Args:
+            lstxt: A list of sentences.
+        Returns:
+            embedding: (B, L, E)
+                L is computed like this:
+                    Sentences are tokenized by self.sub_word_vocab.tokenizer, and truncated to
+                    self.sub_word_max_tokens_per_seq.
+                    The sentences are tokenized by self.word_vocab.tokenizer, and truncated to 
+                    the last word whose complete sub word tokenization was not truncated
+                    above.
+                    L is the number of words in the sentence with the most word tokens.
+        """
+        raise NotImplementedError()
 
-        if emb_init is not None:
-            logger.info("Initializing embeddings with pretrained embeddings ...")
-            self.embedding.from_pretrained(emb_init)
+        """
+        lslsword = self.word_vocab.batch_tokenize(lstxt)
+        lslsword_id = self.word_vocab.batch_get_tok_ids(lslsword)
+        lslslssub_word_id = [
+            [self.sub_word_vocab.tokenize_and_get_tok_ids(word) for word in lsword]
+            for lsword in lslsword
+        ]
 
-        self.wrapper: T.Callable[[torch.Tensor], torch.Tensor]
-        if config.do_layer_norm:
-            self.wrapper = nn.LayerNorm(normalized_shape=config.embedding_dim)
-        elif config.do_rezero:
-            self.wrapper = lambda x: x
+        # We might have a maximum length for the embedding allowed by the subword vocab
+        # For example, if we're doing a BERT model, there's a maximum number of tokens.
 
-    def forward(
-        self, tcword_id: torch.Tensor, position_ids: torch.Tensor
-    ) -> torch.Tensor:
-        assert len(tcword_id) == len(position_ids)
-        h = self.embedding(tcword_id)
-        after_pos_embed = h + self.position_embedding(position_ids)
-
-        after_potentially_norm = self.wrapper(after_pos_embed)
-        return after_potentially_norm
+        sub_word_ids = torch.tensor()
+        subwords = self.sub_word_embedder.embed()
+        """
 
 
-class PositionEmbedding(nn.Module):  # type: ignore
-    def __init__(self, config: GATConfig) -> None:
+class PositionalEmbedder(Embedder):
+    def __init__(self, embed_dim: int) -> None:
         super().__init__()
         initial_max_length = 100
-        self.embedding_dim = config.embedding_dim
+        self._embed_dim = embed_dim
 
         self.embs: torch.Tensor
-        self.register_buffer(
-            "embs", self.create_embs(initial_max_length, self.embedding_dim)
-        )
+        self.register_buffer("embs", self._create_embs(initial_max_length))
 
-    @staticmethod
-    def create_embs(max_length: int, embedding_dim: int) -> torch.Tensor:
-        embs = torch.zeros(max_length, embedding_dim)
+    @property
+    def embed_dim(self) -> int:
+        return self._embed_dim
+
+    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+        """Only needs the shape information from token_ids
+        Args:
+            token_ids: (B, L)
+        Returns:
+            positional_embs: (B, L, E)
+        """
+        cur_max = token_ids.size("L")
+        if cur_max > self.embs.size("L"):
+            logger.info(f"Increasing max position embedding to {cur_max}")
+            self.register_buffer("embs", self._create_embs(cur_max))
+
+        return self.embs[:cur_max].expand(token_ids.size("B"), -1)
+
+    def _create_embs(self, max_length: int) -> torch.Tensor:
+        """
+        Returns:
+            positional_embs: (1, L, E)
+        """
+        embs = torch.zeros(max_length, self.embed_dim)
         position_enc = np.array(
             [
                 [
-                    pos / np.power(10000, 2 * (j // 2) / embedding_dim)
-                    for j in range(embedding_dim)
+                    pos / np.power(10000, 2 * (j // 2) / self.embed_dim)
+                    for j in range(self.embed_dim)
                 ]
                 for pos in range(max_length)
             ]
@@ -339,13 +409,6 @@ class PositionEmbedding(nn.Module):  # type: ignore
         embs.detach_()
         embs.requires_grad = False
         return embs
-
-    def forward(self, position_ids: torch.Tensor) -> torch.Tensor:
-        cur_max = int(position_ids.max().item())
-        if cur_max > self.embs.size(0):
-            logger.info(f"Increasing max position embedding to {cur_max}")
-            self.register_buffer("embs", self.create_embs(cur_max, self.embedding_dim))
-        return self.embs[position_ids]
 
 
 if __name__ == "__main__":

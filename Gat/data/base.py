@@ -1,28 +1,17 @@
+import abc
 import csv
 import hashlib
-import json
 import logging
-import pickle as pkl
+import typing as T
 from pathlib import Path
-from typing import Any
-from typing import Dict
-from typing import Iterable
-from typing import Iterator
-from typing import List
-from typing import Optional
-from typing import Sized
-from typing import Tuple
-from typing import Type
 
 import torch
-from allennlp.data.tokenizers import SpacyTokenizer
+import typing_extensions as TT
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from typing_extensions import Counter
-from typing_extensions import Literal
 
-from ..embeddings.base import WordToVec
-from ..embeddings.glove import GloveWordToVec
+from ..data import tokenizers
 from ..sent2graph.base import SentenceToGraph
 from ..sent2graph.dep import DepSentenceToGraph
 from ..sent2graph.srl import SRLSentenceToGraph
@@ -35,7 +24,7 @@ from ..utils.base import SentgraphExample
 logger = logging.getLogger("__main__")
 
 
-class TextSource(Iterable[SentExample], Sized):
+class TextSource(T.Iterable[SentExample], T.Sized):
     def __getitem__(self, idx: int) -> SentExample:
         raise NotImplementedError()
 
@@ -45,13 +34,13 @@ class TextSource(Iterable[SentExample], Sized):
     def __repr__(self) -> str:
         raise NotImplementedError()
 
-    def __iter__(self) -> Iterator[SentExample]:
+    def __iter__(self) -> T.Iterator[SentExample]:
         for i in range(len(self)):
             yield self[i]
 
 
 class FromIterableTextSource(TextSource):
-    def __init__(self, iterable: Iterable[SentExample]) -> None:
+    def __init__(self, iterable: T.Iterable[SentExample]) -> None:
         self._ls = list(iterable)
 
     def __len__(self) -> int:
@@ -96,10 +85,10 @@ class CsvTextSource(TextSource):
     def __init__(
         self,
         fp: Path,
-        lstxt_col: List[str],
+        lstxt_col: T.List[str],
         lbl_col: str,
         allow_unlablled: bool,
-        csv_reader_kwargs: Dict[str, Any] = {},
+        csv_reader_kwargs: T.Dict[str, T.Any] = {},
     ) -> None:
 
         self.fp = fp
@@ -152,7 +141,7 @@ class Cacheable:
             self.to_cache()
 
     @property
-    def cached_attrs(self) -> List[Tuple[Literal["torch", "pkl", "json"], str]]:
+    def cached_attrs(self) -> T.List[str]:
         raise NotImplementedError()
 
     def process(self) -> None:
@@ -161,150 +150,200 @@ class Cacheable:
     def cached_exists(self) -> bool:
         return all(
             [
-                self._cache_fp_for_attr(pkling_method, attr_name).exists()
-                for pkling_method, attr_name in self.cached_attrs
+                self._cache_fp_for_attr(attr_name).exists()
+                for attr_name in self.cached_attrs
             ]
         )
 
     def from_cache(self) -> None:
-        for pkling_method, attr_name in self.cached_attrs:
-            fp = self._cache_fp_for_attr(pkling_method, attr_name)
+        for attr_name in self.cached_attrs:
+            fp = self._cache_fp_for_attr(attr_name)
 
-            if pkling_method == "torch":
-                with fp.open("rb") as fb:
-                    obj = torch.load(fb)  # type: ignore
-            elif pkling_method == "pkl":
-                with fp.open("rb") as fb:
-                    obj = pkl.load(fb)
-            elif pkling_method == "json":
-                with fp.open() as f:
-                    obj = json.load(f)
-            else:
-                raise Exception("pkcling method")
+            with fp.open("rb") as fb:
+                obj = torch.load(fb)  # type: ignore
             setattr(self, attr_name, obj)
 
-    def _cache_fp_for_attr(self, pkling_method: str, attr_name: str) -> Path:
-        return self.specific_cache_dir / f"{attr_name}.{pkling_method}"
+    def _cache_fp_for_attr(self, attr_name: str) -> Path:
+        return self.specific_cache_dir / f"{attr_name}.torch"
 
     def to_cache(self) -> None:
-        for pkling_method, attr_name in self.cached_attrs:
+        for attr_name in self.cached_attrs:
 
-            fp = self._cache_fp_for_attr(pkling_method, attr_name)
+            fp = self._cache_fp_for_attr(attr_name)
             obj = getattr(self, attr_name)
-            if pkling_method == "torch":
-                with fp.open("wb") as fb:
-                    torch.save(obj, fb)  # type: ignore
-            elif pkling_method == "pkl":
-                with fp.open("wb") as fb:
-                    pkl.dump(obj, fb)
-            elif pkling_method == "json":
-                with fp.open() as f:
-                    json.dump(obj, f)
-            else:
-                raise Exception("pkcling method")
+            with fp.open("wb") as fb:
+                torch.save(obj, fb)  # type: ignore
 
 
-class VocabAndEmb(Cacheable):
+class Vocab(abc.ABC):
+    """
+    Rule:
+        For every method, have a batch version.
+    """
+
+    @abc.abstractmethod
+    def __repr__(self) -> str:
+        pass
+
+    def simplify_txt(self, txt: str) -> str:
+        """This would be the place to do things like lowercasing, stripping out punctuation, ..etc"""
+        return txt
+
+    def batch_simplify_txt(self, lstxt: T.List[str]) -> T.List[str]:
+        return [self.simplify_txt(txt) for txt in lstxt]
+
+    @abc.abstractproperty
+    def tokenizer(self) -> tokenizers.Tokenizer:
+        pass
+
+    @abc.abstractmethod
+    def get_toks(self, lstok_id: T.List[int]) -> T.List[str]:
+        pass
+
+    def batch_get_toks(self, lslstok_id: T.List[T.List[int]]) -> T.List[T.List[str]]:
+        return [self.get_toks(lstok_id) for lstok_id in lslstok_id]
+
+    @abc.abstractmethod
+    def get_tok_ids(self, lsword: T.List[str]) -> T.List[int]:
+        pass
+
+    def batch_get_tok_ids(self, lslsword: T.List[T.List[str]]) -> T.List[T.List[int]]:
+        return [self.get_tok_ids(lsword) for lsword in lslsword]
+
+    def tokenize_and_get_tok_ids(self, txt: str) -> T.List[int]:
+        return self.get_tok_ids(self.tokenizer.tokenize(txt))
+
+    def batch_tokenize_and_get_tok_ids(self, lstxt: T.List[str]) -> T.List[T.List[int]]:
+        return self.batch_get_tok_ids(self.tokenizer.batch_tokenize(lstxt))
+
+    @abc.abstractmethod
+    def get_lbl_id(self, lbl: str) -> int:
+        pass
+
+    def batch_get_lbl_id(self, lslbl: T.List[str]) -> T.List[int]:
+        return [self.get_lbl_id(lbl) for lbl in lslbl]
+
+    @abc.abstractmethod
+    def get_lbl(self, lbl_id: int) -> str:
+        pass
+
+    def batch_get_lbl(self, lslbl_id: T.List[int]) -> T.List[str]:
+        return [self.get_lbl(lbl_id) for lbl_id in lslbl_id]
+
+    @abc.abstractproperty
+    def padding_tok_id(self) -> int:
+        pass
+
+    @abc.abstractproperty
+    def cls_tok_id(self) -> int:
+        pass
+
+    @abc.abstractproperty
+    def unk_tok_id(self) -> int:
+        pass
+
+
+class BasicVocab(Vocab, Cacheable):
+    """Supports lowercasing option, and having a minimum count(unk tokens), and reserving 
+       some initial token ids for special tokens to be used by the model(like [CLS]).
+    """
+
     def __init__(
         self,
         txt_src: TextSource,
         cache_dir: Path,
-        embedder: Optional[WordToVec],
+        tokenizer: tokenizers.Tokenizer,
         lower_case: bool = True,
         unk_thres: int = 1,
         ignore_cache: bool = False,
     ) -> None:
-        self.lower_case = lower_case
-        self.embedder = embedder
-        self.unk_thres = unk_thres
-        self.txt_src = txt_src
-        self.tokenizer = SpacyTokenizer()
+        self._lower_case = lower_case
+        self._unk_thres = unk_thres
+        self._txt_src = txt_src
+        self._tokenizer = tokenizer
 
         self._pad_id = 0
         self._cls_id = 1
         self._unk_id = 2
-        self._real_tokens_start = 3
 
         Cacheable.__init__(self, cache_dir=cache_dir, ignore_cache=ignore_cache)
 
-        self._lbl2id: Dict[str, int] = {
+        self._lbl2id: T.Dict[str, int] = {
             lbl: id_ for id_, lbl in enumerate(self._id2lbl)
         }
-        self._word2id: Dict[str, int] = {
+        self._word2id: T.Dict[str, int] = {
             word: id_ for id_, word in enumerate(self._id2word)
         }
 
+    def simplify_txt(self, txt: str) -> str:
+        """This would be the place to do things like lowercasing, stripping out punctuation, ..etc"""
+        if self._lower_case:
+            return txt.lower()
+        return txt
+
     @property
-    def cached_attrs(self) -> List[Tuple[Literal["torch", "json", "pkl"], str]]:
-        return [("pkl", "_id2word"), ("pkl", "_id2lbl"), ("torch", "_embs")]
+    def cached_attrs(self) -> T.List[str]:
+        return [
+            "_id2word",
+            "_id2lbl",
+        ]
+
+    @property
+    def padding_tok_id(self) -> int:
+        return 0
+
+    @property
+    def cls_tok_id(self) -> int:
+        return 1
+
+    @property
+    def unk_tok_id(self) -> int:
+        return 2
 
     def __repr__(self) -> str:
-        return f"VocabAndEmb-lower_case_{self.lower_case}-embedder_{self.embedder}_unk_thres_{self.unk_thres}_txt_src_{self.txt_src}"
+        return f"BasicVocab-lower_case_{self._lower_case}-unk_thres_{self._unk_thres}-txt_src_{self._txt_src}"
+
+    @property
+    def tokenizer(self) -> tokenizers.Tokenizer:
+        return self._tokenizer
+
+    def get_tok_ids(self, lsword: T.List[str]) -> T.List[int]:
+        return [self._word2id.get(word, self.unk_tok_id) for word in lsword]
+
+    def get_toks(self, lsword_id: T.List[int]) -> T.List[str]:
+        return [self._id2word[word_id] for word_id in lsword_id]
+
+    def tokenize_and_get_tok_ids(self, txt: str) -> T.List[int]:
+        return self.get_tok_ids(self.tokenizer.tokenize(txt))
+
+    def get_lbl_id(self, lbl: str) -> int:
+        return self._lbl2id[lbl]
+
+    def get_lbl(self, lbl_id: int) -> str:
+        return self._id2lbl[lbl_id]
 
     def process(self) -> None:
 
         # Compute word2id
 
         word_counts: Counter[str] = Counter()
-        lslbl: List[str] = []
+        lslbl: T.List[str] = []
 
-        for lssent, lbl in self.txt_src:
+        for lssent, lbl in self._txt_src:
             lslbl.append(lbl)
             for sent in lssent:
-                if self.lower_case:
-                    sent = sent.lower()
-                    lstoken = self.tokenizer.tokenize(sent)
-                    lsword = [token.text for token in lstoken]
-                    word_counts.update(lsword)
+                sent = self.simplify_txt(sent)
+                lsword = self.tokenizer.tokenize(sent)
+                word_counts.update(lsword)
 
         self._id2word = [
-            word for word, count in word_counts.items() if count >= self.unk_thres
+            word for word, count in word_counts.items() if count >= self._unk_thres
         ]
         self._id2word = ["[PAD]", "[CLS]", "[UNK]"] + self._id2word
         self._id2lbl = list(sorted(set(lslbl)))
         self._lblcnt = Counter(lslbl)
         logger.info(f"Made id2word of length {len(self._id2word)}")
         logger.info(f"Made id2lbl of length {len(self._id2lbl)}")
-
-        if self.embedder is not None:
-            embs = torch.zeros((len(self._id2word), self.embedder.dim))
-            self.embedder.prefetch_lsword(self._id2word[self._real_tokens_start :])
-            self.embedder.set_unk_as_avg()
-            embs[self._real_tokens_start :] = self.embedder.for_lsword(
-                self._id2word[self._real_tokens_start :]
-            )
-            embs[self._unk_id] = self.embedder.for_unk()
-            self._embs = embs
-            logger.info(f"Got vocabulary embeddings of shape {embs.shape}")
-        else:
-            logger.info("Not getting vecs")
-            self._embs = torch.tensor([0])
-
-    @property
-    def embs(self) -> torch.Tensor:
-        if self.embedder is None:
-            raise Exception("No embedder was provided, so embs is not set.")
-        return self._embs
-
-    @property
-    def word2id(self,) -> Dict[str, int]:
-        return self._word2id
-
-    @property
-    def lbl2id(self) -> Dict[str, int]:
-        return self._lbl2id
-
-    def batch_id2word(self, lsword_id: List[int]) -> List[str]:
-        return [self._id2word[word_id] for word_id in lsword_id]
-
-    def tokenize_before_unk(self, sent: str) -> List[str]:
-        if self.lower_case:
-            sent = sent.lower()
-        before_unk = [token.text for token in self.tokenizer.tokenize(sent)]
-        return before_unk
-
-    def batch_tokenize_before_unk(self, lssent: List[str]) -> List[List[str]]:
-        return [self.tokenize_before_unk(sent) for sent in lssent]
 
 
 class SliceDataset(Dataset):  # type: ignore
@@ -316,49 +355,54 @@ class SliceDataset(Dataset):  # type: ignore
     def __len__(self) -> int:
         return self.n
 
-    def __getitem__(self, i: int) -> Any:
+    def __getitem__(self, i: int) -> T.Any:
         if i >= len(self):
             raise IndexError("SliceDataset ended.")
         return self.orig_ds[i]
 
 
-class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
+if T.TYPE_CHECKING:
+    BaseDataset = Dataset[SentgraphExample]
+else:
+    BaseDataset = Dataset
+
+
+class SentenceGraphDataset(BaseDataset, Cacheable):
     def __init__(
         self,
-        cache_dir: Path,
         txt_src: TextSource,
         sent2graph: SentenceToGraph,
-        vocab_and_emb: VocabAndEmb,
+        vocab: Vocab,
+        cache_dir: Path,
         ignore_cache: bool = False,
-        unk_thres: Optional[int] = None,
         processing_batch_size: int = 800,
     ):
 
         self.sent2graph = sent2graph
         self.txt_src = txt_src
-        self.vocab_and_emb = vocab_and_emb
+        self.vocab = vocab
         self._processing_batch_size = processing_batch_size
 
         Cacheable.__init__(self, cache_dir=cache_dir, ignore_cache=ignore_cache)
 
     @property
-    def cached_attrs(self) -> List[Tuple[Literal["torch", "json", "pkl"], str]]:
+    def cached_attrs(self) -> T.List[str]:
         return [
-            ("pkl", "_lssentgraph_ex"),
+            "_lssentgraph_ex",
         ]
 
     def __repr__(self) -> str:
-        return f"SentenceGraphDataset-sent2graph_{self.sent2graph}-txt_src_{self.txt_src}-vocab_and_emb_{self.vocab_and_emb}"
+        return f"SentenceGraphDataset-sent2graph_{self.sent2graph}-txt_src_{self.txt_src}-vocab_{self.vocab}"
 
     def process(self) -> None:
         logger.info("Getting sentence graphs ...")
         batch_size = min(self._processing_batch_size, len(self.txt_src))
         # Do batched SRL prediction
-        lslssent: List[List[str]]
+        lslssent: T.List[T.List[str]]
         # Group the sent_ex's into batches
         batched_lssent_ex = grouper(self.txt_src, n=batch_size)
 
-        lssentgraph_ex: List[SentgraphExample] = []
+        lssentgraph_ex: T.List[SentgraphExample] = []
         num_batches = (len(self.txt_src) // batch_size) + int(
             len(self.txt_src) % batch_size != 0
         )
@@ -375,11 +419,11 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
         self._lssentgraph_ex = lssentgraph_ex
 
     def _batch_process_sent_ex(
-        self, lssent_ex: List[SentExample]
-    ) -> List[SentgraphExample]:
+        self, lssent_ex: T.List[SentExample]
+    ) -> T.List[SentgraphExample]:
 
-        lslssent: List[List[str]]
-        lslbl: List[str]
+        lslssent: T.List[T.List[str]]
+        lslbl: T.List[str]
         lslssent, lslbl = map(list, zip(*lssent_ex))  # type: ignore
 
         ### This part is complicated because we allow an arbitrary number of sentences per example,
@@ -387,19 +431,20 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
         ### The trick is, for each batch do one "column" of the batch at a time.
 
         # Easily deadl with lblids
-        lslbl_id = [self.vocab_and_emb.lbl2id[lbl] for lbl in lslbl]
+        lslbl_id = self.vocab.batch_get_lbl_id(lslbl)
 
-        lsper_column_sentgraph: List[List[SentGraph]] = []
+        lsper_column_sentgraph: T.List[T.List[SentGraph]] = []
         for per_column_lssent in zip(*lslssent):
-            per_column_lsword = self.vocab_and_emb.batch_tokenize_before_unk(
-                list(per_column_lssent)
+
+            # For turning the setnence into a graph
+            # Note that we are bypassing any vocab filtering(like replacing with UNK)
+            per_column_lsword = self.vocab.tokenizer.batch_tokenize(
+                self.vocab.batch_simplify_txt(list(per_column_lssent))
             )
-            per_column_nodeid2wordid = [
-                [self.vocab_and_emb.word2id[word] for word in lsword]
-                for lsword in per_column_lsword
-            ]
             per_column_sentgraph = self.sent2graph.batch_to_graph(per_column_lsword)
 
+            # But we do want the UNK tokens for nodeid2wordid
+            per_column_nodeid2wordid = self.vocab.batch_get_tok_ids(per_column_lsword)
             per_column_sentgraph = [
                 SentGraph(
                     lsedge=lsedge,
@@ -413,7 +458,7 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
             ]
 
             lsper_column_sentgraph.append(per_column_sentgraph)
-        lslssentgraph: List[List[SentGraph]] = list(
+        lslssentgraph: T.List[T.List[SentGraph]] = list(
             map(list, zip(*lsper_column_sentgraph))
         )
         res = [
@@ -424,12 +469,11 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
 
     def _process_lssent_ex(self, sent_ex: SentExample) -> SentgraphExample:
         lssent, lbl = sent_ex
-        lssentgraph: List[SentGraph] = []
+        lssentgraph: T.List[SentGraph] = []
         for sent in lssent:
-            lsword = self.vocab_and_emb.tokenize_before_unk(sent)
+            lsword = self.vocab.tokenizer.tokenize(self.vocab.simplify_txt(sent))
             lsedge, lsedge_type, lsimp_node, _ = self.sent2graph.to_graph(lsword)
-            # We get indices relative to sentence beginnig, convert these to global ids
-            nodeid2wordid = [self.vocab_and_emb.word2id[word] for word in lsword]
+            nodeid2wordid = self.vocab.tokenize_and_get_tok_ids(sent)
             sentgraph = SentGraph(
                 lsedge=lsedge,
                 lsedge_type=lsedge_type,
@@ -437,7 +481,7 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
                 nodeid2wordid=nodeid2wordid,
             )
             lssentgraph.append(sentgraph)
-        lbl_id = self.vocab_and_emb.lbl2id[lbl]
+        lbl_id = self.vocab.get_lbl_id(lbl)
         sentgraph_ex = SentgraphExample(lssentgraph=lssentgraph, lbl_id=lbl_id)
         return sentgraph_ex
 
@@ -454,17 +498,15 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
         lslsword_id = [
             sentgraph.nodeid2wordid for sentgraph in sent_graph_ex.lssentgraph
         ]
-        lssent: List[str] = []
+        lssent: T.List[str] = []
         for lsword_id in lslsword_id:
             assert lsword_id is not None
-            lssent.append(
-                " ".join(self.vocab_and_emb._id2word[word_id] for word_id in lsword_id)
-            )
-        lbl = self.vocab_and_emb._id2lbl[sent_graph_ex.lbl_id]
+            lssent.append(" ".join(self.vocab.get_toks(lsword_id)))
+        lbl = self.vocab.get_lbl(sent_graph_ex.lbl_id)
 
         return SentExample(lssent=lssent, lbl=lbl)
 
-    def __iter__(self,) -> Iterator[SentgraphExample]:
+    def __iter__(self,) -> T.Iterator[SentgraphExample]:
         for i in range(len(self)):
             yield self[i]
 
@@ -478,13 +520,13 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
 
         assert sentgraph.nodeid2wordid is not None
         # NetworkX format
-        lsnode_word: List[Tuple[int, Dict[str, str]]] = [
-            (node_id, {"label": quote(self.vocab_and_emb._id2word[word_id])})
-            for node_id, word_id in enumerate(sentgraph.nodeid2wordid)
+        lsnode_word: T.List[T.Tuple[int, T.Dict[str, str]]] = [
+            (node_id, {"label": quote(word)})
+            for node_id, word in enumerate(self.vocab.get_toks(sentgraph.nodeid2wordid))
         ]
 
         # Edges in nx format
-        lsedge_role: List[Tuple[int, int, Dict[str, str]]] = [
+        lsedge_role: T.List[T.Tuple[int, int, T.Dict[str, str]]] = [
             (n1, n2, {"label": quote(self.sent2graph.id2edge_type[edge_id])})
             for (n1, n2), edge_id in zip(sentgraph.lsedge, sentgraph.lsedge_type)
         ]
@@ -495,34 +537,28 @@ class SentenceGraphDataset(Dataset, Cacheable):  # type: ignore
 
     @staticmethod
     def collate_fn(
-        batch: List[SentgraphExample],
-    ) -> Tuple[List[List[SentGraph]], List[int]]:
+        batch: T.List[SentgraphExample],
+    ) -> T.Tuple[T.List[T.List[SentGraph]], T.List[int]]:
         X, y = zip(*batch)
         return list(X), list(y)
 
 
-class SrlAndDepSentenceToGraph(SentenceToGraph):
-    def __init__(self) -> None:
-        raise NotImplementedError()
-
-
-SENT2GRAPHS: Dict[str, Type[SentenceToGraph]] = {
+SENT2GRAPHS: T.Dict[str, T.Type[SentenceToGraph]] = {
     "srl": SRLSentenceToGraph,
     "dep": DepSentenceToGraph,
-    "srl_dep": SrlAndDepSentenceToGraph,
 }
 
 
 def load_splits(
     dataset_dir: Path,
-    sent2graph_name: Literal["srl", "dep"],
-    splits: List[str] = ["train", "val"],
+    sent2graph_name: TT.Literal["srl", "dep"],
+    splits: T.List[str] = ["train", "val"],
     fp_ending: str = "tsv",
-    lstxt_col: List[str] = ["sentence1", "sentence2"],
+    lstxt_col: T.List[str] = ["sentence1", "sentence2"],
     lbl_col: str = "label",
     delimiter: str = "\t",
     unk_thres: int = 2,
-) -> Tuple[Dict[str, SentenceGraphDataset], Dict[str, CsvTextSource], VocabAndEmb]:
+) -> T.Tuple[T.Dict[str, Dataset[SentgraphExample]], T.Dict[str, CsvTextSource], Vocab]:
 
     assert "train" in splits
     txt_srcs = {
@@ -536,20 +572,20 @@ def load_splits(
         for split in splits
     }
 
-    vocab_and_emb = VocabAndEmb(
+    vocab = BasicVocab(
         txt_src=txt_srcs["train"],
         cache_dir=dataset_dir,
-        embedder=GloveWordToVec(),
         unk_thres=unk_thres,
+        tokenizer=tokenizers.Tokenizer(),  # type: ignore # TODO
     )
 
     cls_sent2graph = SENT2GRAPHS[sent2graph_name]
-    split_datasets = {  # noqa:
+    split_datasets: T.Dict[str, Dataset[SentgraphExample]] = {
         split: SentenceGraphDataset(
             cache_dir=dataset_dir,
             txt_src=txt_src,
             sent2graph=cls_sent2graph(),
-            vocab_and_emb=vocab_and_emb,
+            vocab=vocab,
             processing_batch_size=1000,
         )
         for split, txt_src in txt_srcs.items()
@@ -560,8 +596,9 @@ def load_splits(
         logger.info(f"{split}")
         for i in range(min(len(dataset), 5)):
             lssentgraph, lbl_id = dataset[i]
-            logger.info(f"{vocab_and_emb._id2lbl[lbl_id]}")
-            for _, _, _, lsword_id in lssentgraph:
-                logger.info(f"\t{vocab_and_emb.batch_id2word(lsword_id)}")  # type: ignore
+            logger.info(f"{vocab.get_lbl(lbl_id)}")
+            for _, _, _, nodeid2wordid in lssentgraph:
+                assert nodeid2wordid is not None
+                logger.info(f"\t{vocab.get_toks(nodeid2wordid)}")
 
-    return split_datasets, txt_srcs, vocab_and_emb
+    return split_datasets, txt_srcs, vocab
