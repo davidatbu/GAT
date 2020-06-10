@@ -17,8 +17,8 @@ from torch.utils.tensorboard import SummaryWriter  # type: ignore
 from tqdm import tqdm
 
 import wandb  # type: ignore
+from Gat import data
 from Gat.config import base as config
-from Gat.data import base as data
 from Gat.neural import models
 from Gat.utils import base as utils
 

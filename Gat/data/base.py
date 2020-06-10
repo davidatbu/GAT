@@ -11,7 +11,7 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 from typing_extensions import Counter
 
-from ..data import tokenizers
+from . import tokenizers
 from ..sent2graph.base import SentenceToGraph
 from ..sent2graph.dep import DepSentenceToGraph
 from ..sent2graph.srl import SRLSentenceToGraph
@@ -252,7 +252,7 @@ class BasicVocab(Vocab, Cacheable):
         self,
         txt_src: TextSource,
         cache_dir: Path,
-        tokenizer: tokenizers.Tokenizer,
+        tokenizer: tokenizers.base.Tokenizer,
         lower_case: bool = True,
         unk_thres: int = 1,
         ignore_cache: bool = False,
@@ -301,10 +301,10 @@ class BasicVocab(Vocab, Cacheable):
         return 2
 
     def __repr__(self) -> str:
-        return f"BasicVocab-lower_case_{self._lower_case}-unk_thres_{self._unk_thres}-txt_src_{self._txt_src}"
+        return f"BasicVocab-tokenizer_{self.tokenizer}_lower_case_{self._lower_case}-unk_thres_{self._unk_thres}-txt_src_{self._txt_src}"
 
     @property
-    def tokenizer(self) -> tokenizers.Tokenizer:
+    def tokenizer(self) -> tokenizers.base.Tokenizer:
         return self._tokenizer
 
     def get_tok_ids(self, lsword: T.List[str]) -> T.List[int]:

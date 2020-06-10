@@ -1,11 +1,12 @@
 import typing as T
 
 import torch
+from nose import tools
 from torch import nn
 from tqdm import tqdm
 
 from ..config import base as config
-from .layers import GraphMultiHeadAttention
+from Gat.neural import layers
 
 
 class TestGraphMultiHeadAttention:
@@ -16,9 +17,10 @@ class TestGraphMultiHeadAttention:
             intermediate_dim=99,
             cls_id=99,
             nmid_layers=99,
-            nheads=99,
+            num_heads=99,
             nhid=99,
             nedge_type=99,
+            embedder_type=3,
         )
         trainer_config = config.TrainerConfig(
             lr=1e-3,
@@ -74,7 +76,7 @@ class TestGraphMultiHeadAttention:
                 device="cuda",
             )
 
-            multihead_att = GraphMultiHeadAttention(
+            multihead_att = layers.GraphMultiHeadAttention(
                 embed_dim=self.all_config.model.embed_dim,
                 num_heads=num_heads,
                 include_edge_features=True,
@@ -112,3 +114,13 @@ class TestGraphMultiHeadAttention:
                 for num_heads, steps in steps_to_converge_for_num_heads.items()
             )
         )
+
+
+class TestEmbedder:
+    def setUp(self) -> None:
+        self._embedder = layers.BasicEmbedder(
+            num_embeddings=2, embedding_dim=768, padding_idx=0
+        )
+
+    def test_it(self) -> None:
+        tools.ok()

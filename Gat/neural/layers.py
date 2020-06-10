@@ -8,7 +8,6 @@ import torch
 import typing_extensions as TT
 from torch import nn
 
-from ..data import base as data
 
 logger = logging.getLogger("__main__")
 
@@ -16,6 +15,7 @@ logger = logging.getLogger("__main__")
 # Look here: https://mypy.readthedocs.io/en/stable/common_issues.html#using-classes-that-are-generic-in-stubs-but-not-at-runtime
 # for why I have to do this
 if T.TYPE_CHECKING:
+    # TODO: This is totally not standard practice(not obvious)
     Module = nn.Module[torch.Tensor]
 else:
     Module = nn.Module
@@ -305,61 +305,34 @@ class Embedder(Module, abc.ABC):
         pass
 
     @abc.abstractproperty
-    def embed_dim(self) -> int:
+    def embedding_dim(self) -> int:
         pass
 
 
-class TokenizingReconciler(Module):
+class BasicEmbedder(Embedder):
     def __init__(
-        self,
-        sub_word_vocab: data.Vocab,
-        word_vocab: data.Vocab,
-        sub_word_embedder: Embedder,
-        word_embedder: Embedder,
-        sub_word_max_tokens_per_seq: int,
+        self, num_embeddings: int, embedding_dim: int, padding_idx: int
     ) -> None:
-        """Given
-            1. two tokenizations (for example, BERT's WordPiece, and Spacy's regular vocab),
-            2. the token vectors for the sub word tokenization,
-           Do min pooling over the subtokens.
-        """
-        super().__init__()
-        self.sub_word_vocab = sub_word_vocab
-        self.word_vocab = word_vocab
-        self.sub_word_embedder = sub_word_embedder
-        self.word_embedder = word_embedder
-        self.sub_word_max_tokens_per_seq = sub_word_max_tokens_per_seq
+        self._embedder = nn.Embedding(
+            num_embeddings=num_embeddings,
+            embedding_dim=embedding_dim,
+            padding_idx=padding_idx,
+        )
+        self._embedding_dim = embedding_dim
 
-    def forward(self, lstxt: T.List[str]) -> torch.Tensor:
+    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            lstxt: A list of sentences.
+            token_ids: (B, L)
         Returns:
-            embedding: (B, L, E)
-                L is computed like this:
-                    Sentences are tokenized by self.sub_word_vocab.tokenizer, and truncated to
-                    self.sub_word_max_tokens_per_seq.
-                    The sentences are tokenized by self.word_vocab.tokenizer, and truncated to 
-                    the last word whose complete sub word tokenization was not truncated
-                    above.
-                    L is the number of words in the sentence with the most word tokens.
+            embs: (B, L, E)
         """
-        raise NotImplementedError()
+        return self._embedder(token_ids)
+        pass
 
-        """
-        lslsword = self.word_vocab.batch_tokenize(lstxt)
-        lslsword_id = self.word_vocab.batch_get_tok_ids(lslsword)
-        lslslssub_word_id = [
-            [self.sub_word_vocab.tokenize_and_get_tok_ids(word) for word in lsword]
-            for lsword in lslsword
-        ]
-
-        # We might have a maximum length for the embedding allowed by the subword vocab
-        # For example, if we're doing a BERT model, there's a maximum number of tokens.
-
-        sub_word_ids = torch.tensor()
-        subwords = self.sub_word_embedder.embed()
-        """
+    @property
+    def embedding_dim(self) -> int:
+        return self._embedding_dim
 
 
 class PositionalEmbedder(Embedder):
