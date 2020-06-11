@@ -1,6 +1,6 @@
 import typing as T
 
-from transformers import tokenization_bert
+from transformers import tokenization_bert  # type: ignore
 
 from ..tokenizers import base
 

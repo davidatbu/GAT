@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from typing import Union
 
 import torch
-from allennlp.predictors.predictor import Predictor
+from allennlp.predictors.predictor import Predictor  # type: ignore
 from allennlp_models import structured_prediction  # type: ignore # noqa: # the SRL model doesn't get  "registered"  the Predictor class if we don't import this.
 from typing_extensions import Literal
 
@@ -168,7 +168,7 @@ class SRLSentenceToGraph(SentenceToGraph):
             self.task_queue.put((999, "STOP"))
 
     def draw_graph(self, lsword: List[str]) -> None:
-        import matplotlib.pyplot as plt
+        import matplotlib.pyplot as plt  # type: ignore
         import networkx as nx  # type: ignore
 
         lsedge, lsedge_type, lshead_node, _ = self.to_graph(lsword)
@@ -245,7 +245,7 @@ def _srl_resp_to_graph(srl_resp: Dict[str, Any]) -> SentGraph:
 
         # Check that the "predicate" is present, sometimes, allen dones't give me the predicate
         # predicate is marked with a "V" "role"
-        if not "V" in role2slice:
+        if "V" not in role2slice:
             logger.warning(
                 f"NO PREDICATE IN PARSE OF {srl_resp['words']}. Here is one of the returned structs: {srl_desc}"
             )

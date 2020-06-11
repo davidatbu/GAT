@@ -1,6 +1,6 @@
 import typing as T
 
-import spacy
+import spacy  # type: ignore
 
 from ..tokenizers import base
 

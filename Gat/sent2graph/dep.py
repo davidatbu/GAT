@@ -1,8 +1,8 @@
 from typing import Dict
 from typing import List
 
-import spacy
-from spacy.tokens import Doc
+import spacy  # type: ignore
+from spacy.tokens import Doc  # type: ignore
 
 from ..utils.base import EdgeList
 from ..utils.base import EdgeTypeList

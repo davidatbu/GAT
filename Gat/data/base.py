@@ -1,3 +1,4 @@
+from __future__ import annotations
 import abc
 import csv
 import hashlib
@@ -8,7 +9,7 @@ from pathlib import Path
 import torch
 import typing_extensions as TT
 from torch.utils.data import Dataset
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore
 from typing_extensions import Counter
 
 from . import tokenizers
@@ -558,7 +559,11 @@ def load_splits(
     lbl_col: str = "label",
     delimiter: str = "\t",
     unk_thres: int = 2,
-) -> T.Tuple[T.Dict[str, Dataset[SentgraphExample]], T.Dict[str, CsvTextSource], Vocab]:
+) -> T.Tuple[
+    T.Dict[str, Dataset[SentgraphExample]],  # line breaker  # lb
+    T.Dict[str, CsvTextSource],
+    Vocab,
+]:
 
     assert "train" in splits
     txt_srcs = {
