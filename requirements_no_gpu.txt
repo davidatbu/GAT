@@ -10,4 +10,7 @@ torchvision==0.6.0+cpu
 tqdm==4.45.0
 transformers==2.9.1
 wandb==0.8.36
-git+git://github.com/allenai/allennlp.git@tags/v1.0.0rc5
+# git+git://github.com/allenai/allennlp-models.git@tags/v1.0.0rc5#egg=allennlp-models_1.0.0rc5
+allennlp-models==1.0.0rc5
+plotly
+beautifulsoup4
