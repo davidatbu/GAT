@@ -1,11 +1,12 @@
 import typing as T
 
 import torch
-from nose import tools
+from nose import tools  # type: ignore
 from torch import nn
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore
 
 from ..config import base as config
+from Gat.data import tokenizers
 from Gat.neural import layers
 
 
@@ -20,7 +21,7 @@ class TestGraphMultiHeadAttention:
             num_heads=99,
             nhid=99,
             nedge_type=99,
-            embedder_type=3,
+            embedder_type="bert",
         )
         trainer_config = config.TrainerConfig(
             lr=1e-3,
@@ -52,7 +53,13 @@ class TestGraphMultiHeadAttention:
         ] = True  # Make sure all the self loops are there
 
         self.node_labels = T.cast(
-            torch.LongTensor, torch.zeros(self.all_config.trainer.train_batch_size, self.seq_length, dtype=torch.long, names=("B", "N"))  # type: ignore
+            torch.LongTensor,
+            torch.zeros(  # type: ignore
+                self.all_config.trainer.train_batch_size,
+                self.seq_length,
+                dtype=torch.long,
+                names=("B", "N"),
+            ),
         ).cuda()
 
         self.node_labels.rename(None)[:, range(13)] = torch.tensor(range(13)).cuda()
@@ -118,9 +125,40 @@ class TestGraphMultiHeadAttention:
 
 class TestEmbedder:
     def setUp(self) -> None:
-        self._embedder = layers.BasicEmbedder(
-            num_embeddings=2, embedding_dim=768, padding_idx=0
+        self._tokenizer = tokenizers.spacy.WrappedSpacyTokenizer()
+        self._padding_idx = 0
+
+        self._lslstok_id = [
+            [1, 0],
+            [2],
+        ]
+
+    def test_basic(self) -> None:
+        basic_embedder = layers.BasicEmbedder(
+            tokenizer=self._tokenizer,
+            num_embeddings=3,
+            embedding_dim=768,
+            padding_idx=self._padding_idx,
+        )
+        embs = basic_embedder.forward(self._lslstok_id)
+        tools.ok_(embs[0, 1].sum().item() == 0.0, msg="Padding vector not all zeros")
+        embs_size = tuple(embs.size())
+        tools.eq_(
+            embs_size,
+            (2, 2, basic_embedder.embedding_dim),
+            msg=f"embs_size is {embs_size} "
+            f"instead of {(2,2, basic_embedder.embedding_dim)}",
         )
 
-    def test_it(self) -> None:
-        tools.ok()
+    def test_pos(self) -> None:
+        pos_embedder = layers.PositionalEmbedder(
+            tokenizer=self._tokenizer, embedding_dim=768,
+        )
+        embs = pos_embedder.forward(self._lslstok_id)
+        embs_size = tuple(embs.size())
+        tools.eq_(
+            embs_size,
+            (2, 2, pos_embedder.embedding_dim),
+            msg=f"embs_size is {embs_size} "
+            f"instead of {(2,2, pos_embedder.embedding_dim)}",
+        )

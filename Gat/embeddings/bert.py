@@ -4,11 +4,11 @@ from typing import Optional
 
 import numpy as np
 import torch
-from transformers import AutoConfig
+from transformers import AutoConfig  # type: ignore
 from transformers import AutoModel
 from transformers import AutoTokenizer
 
-from .base import ContextualWordToVec
+from .base import ContextualWordToVec  # type: ignore
 
 logging.basicConfig()
 logger = logging.getLogger("embeddings")

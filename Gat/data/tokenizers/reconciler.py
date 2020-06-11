@@ -41,7 +41,6 @@ class TokenizingReconciler:
                     above.
                     L is the number of words in the sentence with the most word tokens.
         """
-        self.subword_vocab.hi()
         raise NotImplementedError()
 
         """

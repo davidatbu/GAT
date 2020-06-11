@@ -1,4 +1,4 @@
-import nose
+import nose  # type: ignore
 
 from ...data import tokenizers
 

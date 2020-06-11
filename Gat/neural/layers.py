@@ -7,6 +7,11 @@ import numpy as np
 import torch
 import typing_extensions as TT
 from torch import nn
+from transformers import AutoConfig  # type: ignore
+from transformers import AutoModel
+
+from Gat import utils
+from Gat.data import tokenizers
 
 
 logger = logging.getLogger("__main__")
@@ -294,11 +299,16 @@ class FeedForwardWrapped(nn.Module):  # type: ignore
 
 
 class Embedder(Module, abc.ABC):
+    def __init__(self, tokenizer: tokenizers.Tokenizer) -> None:
+        super().__init__()
+        self._tokenizer = tokenizer
+        self._validate_tokenizer()
+
     @abc.abstractmethod
-    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, lsls_tok_id: T.List[T.List[int]]) -> torch.Tensor:
         """
         Args:
-            token_ids: (B, L)
+            token_ids:
         Returns:
             embs: (B, L, E)
         """
@@ -308,27 +318,73 @@ class Embedder(Module, abc.ABC):
     def embedding_dim(self) -> int:
         pass
 
+    def _validate_tokenizer(self) -> int:
+        "Raise exception if self._tokenizer is not correct"
+        pass
 
-class BasicEmbedder(Embedder):
-    def __init__(
-        self, num_embeddings: int, embedding_dim: int, padding_idx: int
-    ) -> None:
-        self._embedder = nn.Embedding(
-            num_embeddings=num_embeddings,
-            embedding_dim=embedding_dim,
-            padding_idx=padding_idx,
+
+class BertEmbedder(Embedder):
+    def __init__(self, last_how_many_layers: int = 4,) -> None:
+        self._model_name = ("bert-base-uncased",)
+        self._embedding_dim = 768 * last_how_many_layers
+
+        # Setup transformers BERT
+        config = AutoConfig.from_pretrained(
+            pretrained_model_name_or_path=self._model_name, output_hidden_states=True
         )
-        self._embedding_dim = embedding_dim
+        self._model = AutoModel.from_pretrained(
+            pretrained_model_name_or_path=self._model_name, config=config
+        )
 
-    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, lslstok_id: T.List[T.List[int]]) -> torch.Tensor:
         """
         Args:
             token_ids: (B, L)
         Returns:
             embs: (B, L, E)
         """
-        return self._embedder(token_ids)
-        pass
+
+        raise NotImplementedError()
+        # return self._embedder(token_ids)
+
+    @property
+    def embedding_dim(self) -> int:
+        return self._embedding_dim
+
+
+class BasicEmbedder(Embedder):
+    def __init__(
+        self,
+        num_embeddings: int,
+        embedding_dim: int,
+        padding_idx: int,
+        tokenizer: tokenizers.Tokenizer,
+    ) -> None:
+        super().__init__(tokenizer=tokenizer)
+        self._embedder = nn.Embedding(
+            num_embeddings=num_embeddings,
+            embedding_dim=embedding_dim,
+            padding_idx=padding_idx,
+        )
+        self._embedding_dim = embedding_dim
+        self._padding_idx = padding_idx
+
+    def forward(self, lslstok_id: T.List[T.List[int]]) -> torch.Tensor:
+        """
+        Args:
+            token_ids:
+        Returns:
+            embs: (B, L, E)
+                Where L is the length of the longest lstok_id in lslstok_id
+        """
+
+        padded_lslstok_id = utils.pad_lslsid(
+            lslstok_id, padding_tok_id=self._padding_idx
+        )
+
+        token_ids = torch.tensor(padded_lslstok_id)
+        res = self._embedder(token_ids)
+        return res
 
     @property
     def embedding_dim(self) -> int:
@@ -336,52 +392,55 @@ class BasicEmbedder(Embedder):
 
 
 class PositionalEmbedder(Embedder):
-    def __init__(self, embed_dim: int) -> None:
-        super().__init__()
+    def __init__(self, embedding_dim: int, tokenizer: tokenizers.Tokenizer) -> None:
+        super().__init__(tokenizer=tokenizer)
         initial_max_length = 100
-        self._embed_dim = embed_dim
+        self._embedding_dim = embedding_dim
 
         self.embs: torch.Tensor
         self.register_buffer("embs", self._create_embs(initial_max_length))
 
     @property
-    def embed_dim(self) -> int:
-        return self._embed_dim
+    def embedding_dim(self) -> int:
+        return self._embedding_dim
 
-    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
-        """Only needs the shape information from token_ids
+    def forward(self, lslstok_id: T.List[T.List[int]]) -> torch.Tensor:
+        """Only needs the length information from lslstok_id.
+
         Args:
-            token_ids: (B, L)
+            token_ids:
         Returns:
             positional_embs: (B, L, E)
+                Where L is the size of the longest lstok_id in lslstok_id
         """
-        cur_max = token_ids.size("L")
+        cur_max = max(map(len, lslstok_id))
         if cur_max > self.embs.size("L"):
             logger.info(f"Increasing max position embedding to {cur_max}")
             self.register_buffer("embs", self._create_embs(cur_max))
 
-        return self.embs[:cur_max].expand(token_ids.size("B"), -1)
+        batch_size = len(lslstok_id)
+        return self.embs[:, :cur_max].expand(batch_size, -1, -1)
 
     def _create_embs(self, max_length: int) -> torch.Tensor:
         """
         Returns:
             positional_embs: (1, L, E)
         """
-        embs = torch.zeros(max_length, self.embed_dim)
+        embs = torch.zeros(1, max_length, self.embedding_dim, names=("B", "L", "E"))
         position_enc = np.array(
             [
                 [
-                    pos / np.power(10000, 2 * (j // 2) / self.embed_dim)
-                    for j in range(self.embed_dim)
+                    pos / np.power(10000, 2 * (j // 2) / self.embedding_dim)
+                    for j in range(self.embedding_dim)
                 ]
                 for pos in range(max_length)
             ]
         )
-        embs[:, 0::2] = torch.from_numpy(np.sin(position_enc[:, 0::2]))
-        embs[:, 1::2] = torch.from_numpy(np.cos(position_enc[:, 1::2]))
+        embs[0, :, 0::2] = torch.from_numpy(np.sin(position_enc[:, 0::2]))
+        embs[0, :, 1::2] = torch.from_numpy(np.cos(position_enc[:, 1::2]))
         embs.detach_()
         embs.requires_grad = False
-        return embs
+        return embs  # type: ignore
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ from typing import Optional
 from typing import Tuple
 
 import torch
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore
 
 
 FASTTEXT_F = Path(
