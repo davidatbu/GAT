@@ -17,8 +17,9 @@ from Gat.data import tokenizers
 logger = logging.getLogger("__main__")
 
 
-# Look here: https://mypy.readthedocs.io/en/stable/common_issues.html#using-classes-that-are-generic-in-stubs-but-not-at-runtime
-# for why I have to do this
+# Look here:
+# https://mypy.readthedocs.io/en/stable/common_issues.html#using-classes-that-are-generic-in-stubs-but-not-at-runtime
+# for why.
 if T.TYPE_CHECKING:
     # TODO: This is totally not standard practice(not obvious)
     Module = nn.Module[torch.Tensor]
@@ -71,13 +72,15 @@ class GraphMultiHeadAttention(Module):
         Shape:
             - Inputs:
             - adj: (B, N_left, N_right)
-                adj[b, i, j] means there's a directed edge from the j-th node to the i-th node of the b-th graph in the batch.
+                adj[b, i, j] means there's a directed edge from the j-th node to
+                the i-th node of the b-th graph in the batch.
 
-                That means, node features of the j-th node will affect the calculation of the node features of the i-th node.
+                That means, node features of the j-th node will affect the calculation
+                of the node features of the i-th node.
             - node_features: (B, N, E)
             - value_edge_features and key_edge_features: (B, N_left, N_right, head_size)
-                edge_features[b, i, j, :] are the features of the directed edge from the j-th node to the i-th node of the
-                b-th graph in the batch.
+                edge_features[b, i, j, :] are the features of the directed edge from
+                the j-th node to the i-th node of the b-th graph in the batch.
 
                 That means, this E long vector will affect e_{ji} and z_j
             - Outputs:
@@ -299,10 +302,14 @@ class FeedForwardWrapped(nn.Module):  # type: ignore
 
 
 class Embedder(Module, abc.ABC):
-    def __init__(self, tokenizer: tokenizers.Tokenizer) -> None:
+    def __init__(self, tokenizer: T.Optional[tokenizers.Tokenizer]) -> None:
+        """Some embedders don't need to know the tokenizer(for example, positional embedding.
+           I think, only BertEmbedder needs the tokenizer actually.
+        """
         super().__init__()
-        self._tokenizer = tokenizer
-        self._validate_tokenizer()
+        if tokenizer is not None:
+            self._tokenizer = tokenizer
+            self._validate_tokenizer()
 
     @abc.abstractmethod
     def forward(self, lsls_tok_id: T.List[T.List[int]]) -> torch.Tensor:
@@ -318,14 +325,18 @@ class Embedder(Module, abc.ABC):
     def embedding_dim(self) -> int:
         pass
 
-    def _validate_tokenizer(self) -> int:
+    def _validate_tokenizer(self) -> None:
         "Raise exception if self._tokenizer is not correct"
         pass
 
 
 class BertEmbedder(Embedder):
-    def __init__(self, last_how_many_layers: int = 4,) -> None:
-        self._model_name = ("bert-base-uncased",)
+    _model_name = "bert-base-uncased"
+
+    def __init__(
+        self, tokenizer: tokenizers.Tokenizer, last_how_many_layers: int = 4
+    ) -> None:
+        super().__init__(tokenizer=tokenizer)
         self._embedding_dim = 768 * last_how_many_layers
 
         # Setup transformers BERT
@@ -343,6 +354,7 @@ class BertEmbedder(Embedder):
         Returns:
             embs: (B, L, E)
         """
+        breakpoint()
 
         raise NotImplementedError()
         # return self._embedder(token_ids)
@@ -350,6 +362,14 @@ class BertEmbedder(Embedder):
     @property
     def embedding_dim(self) -> int:
         return self._embedding_dim
+
+    def _validate_tokenizer(self) -> None:
+        acceptable_tokenizer_repr = f"WrappedBertTokenizer-{self._model_name}"
+        if repr(self._tokenizer) != acceptable_tokenizer_repr:
+            raise Exception(
+                f"{repr(self._tokenizer)} is not a valid tokenizer for BertEmbedder."
+                f" Only {acceptable_tokenizer_repr} is."
+            )
 
 
 class BasicEmbedder(Embedder):
@@ -392,8 +412,8 @@ class BasicEmbedder(Embedder):
 
 
 class PositionalEmbedder(Embedder):
-    def __init__(self, embedding_dim: int, tokenizer: tokenizers.Tokenizer) -> None:
-        super().__init__(tokenizer=tokenizer)
+    def __init__(self, embedding_dim: int) -> None:
+        super().__init__()
         initial_max_length = 100
         self._embedding_dim = embedding_dim
 
@@ -426,7 +446,9 @@ class PositionalEmbedder(Embedder):
         Returns:
             positional_embs: (1, L, E)
         """
-        embs = torch.zeros(1, max_length, self.embedding_dim, names=("B", "L", "E"))
+        embs = torch.zeros(  # type: ignore
+            1, max_length, self.embedding_dim, names=("B", "L", "E")
+        )  # TODO: torch should recognize named tensors in their types
         position_enc = np.array(
             [
                 [

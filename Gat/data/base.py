@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import abc
 import csv
 import hashlib
@@ -12,7 +13,6 @@ from torch.utils.data import Dataset
 from tqdm import tqdm  # type: ignore
 from typing_extensions import Counter
 
-from . import tokenizers
 from ..sent2graph.base import SentenceToGraph
 from ..sent2graph.dep import DepSentenceToGraph
 from ..sent2graph.srl import SRLSentenceToGraph
@@ -20,6 +20,7 @@ from ..utils.base import grouper
 from ..utils.base import SentExample
 from ..utils.base import SentGraph
 from ..utils.base import SentgraphExample
+from Gat.data import tokenizers
 
 
 logger = logging.getLogger("__main__")
@@ -50,7 +51,8 @@ class FromIterableTextSource(TextSource):
     def __getitem__(self, idx: int) -> SentExample:
         if idx < 0 or idx > len(self):
             raise IndexError(
-                f"f{self.__class__.__name__} has only {len(self)} items. {idx} was asked, which is either negative or gretaer than length."
+                f"f{self.__class__.__name__} has only {len(self)} items. {idx} was asked, which is either negative or "
+                "greater than length."
             )
         return self._ls[idx]
 
@@ -100,7 +102,8 @@ class CsvTextSource(TextSource):
             for txt_col in lstxt_col:
                 if headers.count(txt_col) != 1 or headers.count(lbl_col) != 1:
                     raise Exception(
-                        f"{txt_col} or {lbl_col} not found as a header in csv flie {str(fp)}, or were found more than once."
+                        f"{txt_col} or {lbl_col} not found as a header in csv flie {str(fp)},"
+                        " or were found more than once."
                     )
             lstxt_col_i = [headers.index(txt_col) for txt_col in lstxt_col]
             lbl_col_i = headers.index(lbl_col)
@@ -244,9 +247,29 @@ class Vocab(abc.ABC):
         pass
 
 
+class Labels(Cacheable):
+    def __init__(self, cache_dir: Path, ignore_cache: bool = False) -> None:
+        super().__init__(cache_dir=cache_dir, ignore_cache=ignore_cache)
+
+        self._lbl2id: T.Dict[str, int] = {
+            lbl: id_ for id_, lbl in enumerate(self._id2lbl)
+        }
+
+    @property
+    def cached_attrs(self) -> T.List[str]:
+        return ["_id2lbl"]
+
+    def get_lbl_id(self, lbl: str) -> int:
+        return self._lbl2id[lbl]
+
+    def get_lbl(self, lbl_id: int) -> str:
+        return self._id2lbl[lbl_id]
+
+
 class BasicVocab(Vocab, Cacheable):
-    """Supports lowercasing option, and having a minimum count(unk tokens), and reserving 
-       some initial token ids for special tokens to be used by the model(like [CLS]).
+    """
+    Supports lowercasing option, and having a minimum count(unk tokens),
+    and reserving one initial token ids for special tokens to be used by the model(like [CLS]).
     """
 
     def __init__(
@@ -269,9 +292,6 @@ class BasicVocab(Vocab, Cacheable):
 
         Cacheable.__init__(self, cache_dir=cache_dir, ignore_cache=ignore_cache)
 
-        self._lbl2id: T.Dict[str, int] = {
-            lbl: id_ for id_, lbl in enumerate(self._id2lbl)
-        }
         self._word2id: T.Dict[str, int] = {
             word: id_ for id_, word in enumerate(self._id2word)
         }
@@ -286,7 +306,6 @@ class BasicVocab(Vocab, Cacheable):
     def cached_attrs(self) -> T.List[str]:
         return [
             "_id2word",
-            "_id2lbl",
         ]
 
     @property
@@ -302,7 +321,11 @@ class BasicVocab(Vocab, Cacheable):
         return 2
 
     def __repr__(self) -> str:
-        return f"BasicVocab-tokenizer_{self.tokenizer}_lower_case_{self._lower_case}-unk_thres_{self._unk_thres}-txt_src_{self._txt_src}"
+        return (
+            f"BasicVocab-"
+            f"tokenizer_{self.tokenizer}_lower_case_{self._lower_case}-unk_thres_{self._unk_thres}-"
+            f"txt_src_{self._txt_src}"
+        )
 
     @property
     def tokenizer(self) -> tokenizers.base.Tokenizer:
@@ -316,12 +339,6 @@ class BasicVocab(Vocab, Cacheable):
 
     def tokenize_and_get_tok_ids(self, txt: str) -> T.List[int]:
         return self.get_tok_ids(self.tokenizer.tokenize(txt))
-
-    def get_lbl_id(self, lbl: str) -> int:
-        return self._lbl2id[lbl]
-
-    def get_lbl(self, lbl_id: int) -> str:
-        return self._id2lbl[lbl_id]
 
     def process(self) -> None:
 
@@ -345,6 +362,69 @@ class BasicVocab(Vocab, Cacheable):
         self._lblcnt = Counter(lslbl)
         logger.info(f"Made id2word of length {len(self._id2word)}")
         logger.info(f"Made id2lbl of length {len(self._id2lbl)}")
+
+
+class BertVocab(Vocab):
+    _model_name = "bert-base-uncased"
+
+    def __init__(self, tokenizer: tokenizers.bert.WrappedBertTokenizer) -> None:
+        """Why pass in tokenizer when we only support tokenizers.bert.WrappedBertTokenizer?
+        Because we want to make sure that it is indeed that tokenizer that is being used for this vocab.
+        """
+
+        self._tokenizer = tokenizer
+        super().__init__()
+
+        self._pad_id = 0
+        self._cls_id = 1
+        self._unk_id = 2
+
+    def simplify_txt(self, txt: str) -> str:
+        # We only support bert-base-uncased right now
+        return txt.lower()
+
+    @property
+    def padding_tok_id(self) -> int:
+        res = self._tokenizer.unwrapped_tokenizer.pad_token_id
+        return res  # type: ignore
+
+    @property
+    def cls_tok_id(self) -> int:
+        res = self._tokenizer.unwrapped_tokenizer.cls_token_id
+        return res  # type: ignore
+
+    @property
+    def unk_tok_id(self) -> int:
+        res = self._tokenizer.unwrapped_tokenizer.unk_token_id
+        return res  # type: ignore
+
+    def __repr__(self) -> str:
+        return f"BertVocab-" f"model_name_{self._tokenizer.bert_model_name}"
+
+    @property
+    def tokenizer(self) -> tokenizers.bert.WrappedBertTokenizer:
+        return self._tokenizer
+
+    def get_tok_ids(self, lsword: T.List[str]) -> T.List[int]:
+        lstok_id: T.List[
+            int
+        ] = self.tokenizer.unwrapped_tokenizer.convert_tokens_to_ids(lsword)
+        return lstok_id
+
+    def get_toks(self, lsword_id: T.List[int]) -> T.List[str]:
+        lstok: T.List[str] = self.tokenizer.unwrapped_tokenizer._convert_token_to_id(
+            lsword_id
+        )
+        return lstok
+
+    def tokenize_and_get_tok_ids(self, txt: str) -> T.List[int]:
+        return self.get_tok_ids(self.tokenizer.tokenize(txt))
+
+    def get_lbl_id(self, lbl: str) -> int:
+        return self._lbl2id[lbl]
+
+    def get_lbl(self, lbl_id: int) -> str:
+        return self._id2lbl[lbl_id]
 
 
 class SliceDataset(Dataset):  # type: ignore
@@ -427,9 +507,9 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
         lslbl: T.List[str]
         lslssent, lslbl = map(list, zip(*lssent_ex))  # type: ignore
 
-        ### This part is complicated because we allow an arbitrary number of sentences per example,
-        ### AND we want to do batched prediction.
-        ### The trick is, for each batch do one "column" of the batch at a time.
+        # This part is complicated because we allow an arbitrary number of sentences per example,
+        # AND we want to do batched prediction.
+        # The trick is, for each batch do one "column" of the batch at a time.
 
         # Easily deadl with lblids
         lslbl_id = self.vocab.batch_get_lbl_id(lslbl)

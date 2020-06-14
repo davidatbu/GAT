@@ -125,7 +125,8 @@ class TestGraphMultiHeadAttention:
 
 class TestEmbedder:
     def setUp(self) -> None:
-        self._tokenizer = tokenizers.spacy.WrappedSpacyTokenizer()
+        self._spacy_tokenizer = tokenizers.spacy.WrappedSpacyTokenizer()
+        self._bert_tokenizer = tokenizers.bert.WrappedBertTokenizer()
         self._padding_idx = 0
 
         self._lslstok_id = [
@@ -135,7 +136,7 @@ class TestEmbedder:
 
     def test_basic(self) -> None:
         basic_embedder = layers.BasicEmbedder(
-            tokenizer=self._tokenizer,
+            tokenizer=self._spacy_tokenizer,
             num_embeddings=3,
             embedding_dim=768,
             padding_idx=self._padding_idx,
@@ -152,13 +153,29 @@ class TestEmbedder:
 
     def test_pos(self) -> None:
         pos_embedder = layers.PositionalEmbedder(
-            tokenizer=self._tokenizer, embedding_dim=768,
+            tokenizer=self._spacy_tokenizer, embedding_dim=768,
         )
         embs = pos_embedder.forward(self._lslstok_id)
         embs_size = tuple(embs.size())
         tools.eq_(
             embs_size,
             (2, 2, pos_embedder.embedding_dim),
+            msg=f"embs_size is {embs_size} "
+            f"instead of {(2,2, pos_embedder.embedding_dim)}",
+        )
+
+    def test_bert(self) -> None:
+        lslstok = self._bert_tokenizer.batch_tokenize(
+            ["i love embeddings."], "don't you?"]
+        )
+        embedder = layers.BertEmbedder(
+            tokenizer=self._bert_tokenizer, last_how_many_layers=4
+        )
+        embs = embedder.forward(self._lslstok_id)
+        embs_size = tuple(embs.size())
+        tools.eq_(
+            embs_size,
+            (2, 2, embedder.embedding_dim),
             msg=f"embs_size is {embs_size} "
             f"instead of {(2,2, pos_embedder.embedding_dim)}",
         )

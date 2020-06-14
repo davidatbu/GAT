@@ -9,14 +9,14 @@ import sklearn.metrics as skmetrics
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import wandb  # type: ignore
 from sklearn.metrics import confusion_matrix
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from torch.utils.tensorboard import SummaryWriter  # type: ignore
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore
 
-import wandb  # type: ignore
 from Gat import data
 from Gat.config import base as config
 from Gat.neural import models

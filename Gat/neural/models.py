@@ -24,7 +24,9 @@ class GATLayered(nn.Module):  # type: ignore
 
         self.token_embedder = layers.Embedder()  # type: ignore # TODO
         self.key_edge_embedder = layers.Embedder()  # type: ignore # TODO
-        self.positional_embedder = layers.PositionalEmbedder(config.embed_dim)
+        self.positional_embedder = layers.PositionalEmbedder(
+            embedding_dim=config.embed_dim
+        )
         self.lsmultihead_att_wrapper = nn.ModuleList(
             [
                 layers.GraphMultiHeadAttentionWrapped(
