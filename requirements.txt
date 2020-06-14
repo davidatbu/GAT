@@ -1,8 +1,4 @@
-black==19.10b0
-flake8==3.8.1
-mypy==0.770
 networkx==2.4
-nose==1.3.7
 scikit-learn==0.22.2.post1
 tensorboard==2.2.1
 torch==1.5.0+cu101
@@ -10,5 +6,7 @@ torchvision==0.6.0+cu101
 tqdm==4.45.0
 transformers==2.9.1
 wandb==0.8.36
-git+ssh://github.com/allenai/allennlp.git@tags/v1.0.0rc5#egg=allennlp
+# git+git://github.com/allenai/allennlp-models.git@tags/v1.0.0rc5#egg=allennlp-models_1.0.0rc5
+allennlp-models==1.0.0rc5
+plotly
 beautifulsoup4
