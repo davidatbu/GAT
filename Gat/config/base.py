@@ -74,6 +74,7 @@ class TrainerConfig(Config):
         do_eval_every_epoch: bool = True,
         do_eval_on_truncated_train_set: bool = True,
     ):
+        """Look as superclass doc."""
         self.lr = lr
         self.use_cuda = use_cuda
         self.epochs = epochs
@@ -104,7 +105,8 @@ class GATConfig(Config):
         "alpha",
         "undirected",
         "nedge_type",
-        "include_edge_features" "rezero_or_residual",
+        "include_edge_features",
+        "rezero_or_residual",
     ] + Config._attr_names
 
     def __init__(
@@ -127,6 +129,7 @@ class GATConfig(Config):
         include_edge_features: bool = True,
         rezero_or_residual: TT.Literal["rezero", "residual"] = "rezero",
     ):
+        """Look at superclass doc."""
         self.embed_dim = embed_dim
         self.vocab_size = vocab_size
         self.embedder_type = embedder_type

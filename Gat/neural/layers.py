@@ -1,3 +1,6 @@
+"""nn.Module subclasses not "big enough" to be in models.py."""
+from __future__ import annotations
+
 import abc
 import logging
 import math
@@ -7,7 +10,7 @@ import numpy as np
 import torch
 import typing_extensions as TT
 from torch import nn
-from transformers import AutoConfig  # type: ignore
+from transformers import AutoConfig
 from transformers import AutoModel
 
 from Gat import utils
@@ -17,17 +20,16 @@ from Gat.data import tokenizers
 logger = logging.getLogger("__main__")
 
 
-# Look here:
+# Look at
 # https://mypy.readthedocs.io/en/stable/common_issues.html#using-classes-that-are-generic-in-stubs-but-not-at-runtime
-# for why.
+# for why this is necessary.
 if T.TYPE_CHECKING:
-    # TODO: This is totally not standard practice(not obvious)
-    Module = nn.Module[torch.Tensor]
+    nnModule = nn.Module[torch.Tensor]
 else:
-    Module = nn.Module
+    nnModule = nn.Module
 
 
-class GraphMultiHeadAttention(Module):
+class GraphMultiHeadAttention(nnModule):
     def __init__(
         self,
         embed_dim: int,
@@ -35,10 +37,14 @@ class GraphMultiHeadAttention(Module):
         include_edge_features: bool,
         edge_dropout_p: float,
     ):
-        """Why not use nn.MultiHeadAttention?
-            1. Because it doesn't support graph like inputs.  Ie, it assumes
-               every node/token is connected with every other token. We don't
-            2. Because we are doing edge aware attention.
+        """Multihead attention that supports an arbitrary graph.
+
+        Note that nn.MultiHeadAttention(the PyTorch native):
+            1. doesn't support graph like inputs.  Ie, it assumes
+               every node/token is connected with every other token.
+            2. Has no way to take edge features into attention calculation,
+               or calculating node features.
+        We do both things.
         """
         super().__init__()
         self.embed_dim = embed_dim
@@ -68,25 +74,24 @@ class GraphMultiHeadAttention(Module):
         key_edge_features: T.Optional[torch.FloatTensor] = None,
         value_edge_features: T.Optional[torch.FloatTensor] = None,
     ) -> torch.FloatTensor:
-        """
-        Shape:
-            - Inputs:
-            - adj: (B, N_left, N_right)
+        """.
+
+        Args:
+            adj: (B, N_left, N_right)
                 adj[b, i, j] means there's a directed edge from the j-th node to
                 the i-th node of the b-th graph in the batch.
 
                 That means, node features of the j-th node will affect the calculation
                 of the node features of the i-th node.
-            - node_features: (B, N, E)
-            - value_edge_features and key_edge_features: (B, N_left, N_right, head_size)
+            node_features: (B, N, E)
+            value_edge_features and key_edge_features: (B, N_left, N_right, head_size)
                 edge_features[b, i, j, :] are the features of the directed edge from
                 the j-th node to the i-th node of the b-th graph in the batch.
 
                 That means, this E long vector will affect e_{ji} and z_j
-            - Outputs:
-            - result: (B, N, E)
+        Returns:
+            result: (B, N, E)
         """
-
         if not self.include_edge_features and (
             key_edge_features or value_edge_features
         ):
@@ -95,9 +100,9 @@ class GraphMultiHeadAttention(Module):
             raise Exception("passing in value_edge_features is not yet implemented")
 
         # Refine names because linear layer erases the E dim name
-        Q: torch.FloatTensor = self.W_query(node_features).refine_names(..., "E")  # type: ignore
-        K: torch.FloatTensor = self.W_key(node_features).refine_names(..., "E")  # type: ignore
-        V: torch.FloatTensor = self.W_value(node_features).refine_names(..., "E")  # type: ignore
+        Q: torch.FloatTensor = self.W_query(node_features).refine_names(..., "E")  # type: ignore # noqa:
+        K: torch.FloatTensor = self.W_key(node_features).refine_names(..., "E")  # type: ignore # noqa:
+        V: torch.FloatTensor = self.W_value(node_features).refine_names(..., "E")  # type: ignore # noqa:
 
         # Reshape using self.num_heads to compute probabilities headwize
         # Rename dim names to avoid N being duplicated in att_scores
@@ -108,7 +113,7 @@ class GraphMultiHeadAttention(Module):
         # Compute node attention probability
         att_scores = torch.matmul(
             transed_Q.rename(N="N_left"),  # type: ignore
-            transed_K.rename(N="N_right").transpose("N_right", "head_size"),  # type: ignore
+            transed_K.rename(N="N_right").transpose("N_right", "head_size"),  # type: ignore # noqa:
         )
         # att_scores: (B, head_size, N_left, N_right)
 
@@ -116,16 +121,19 @@ class GraphMultiHeadAttention(Module):
             # Einstein notation used here .
             # A little complicated because of batching dimension.
             # Just keep in mind that:
-            ##############################################
-            # For edge_att_scores_{i,j} = dot_product(i-th query vector, with the edge feature of edge (j,i))
-            ##############################################
+            # edge_att_scores_{i,j} = dot_product(
+            #   i-th query vector,
+            #   the edge feature of edge (j,i)
+            # )
             edge_att_scores = torch.einsum(  # type: ignore
                 # b is batch
                 # h is head number
                 # n is node number
                 # m is also node number
-                # d is dimension of head (head size). This is the dimension that's being summed over
-                # TODO: Look at doing this with BLAS operations, or may be even tensordot works bfaster than einsum
+                # d is dimension of head (head size).
+                #      This is the dimension that's being summed over
+                # TODO: Look at doing this with BLAS operations,
+                #        or may be tensordot.
                 "bhnd,bnmd->bhnm",
                 transed_Q.rename(None),
                 key_edge_features.rename(None),
@@ -136,9 +144,10 @@ class GraphMultiHeadAttention(Module):
         att_scores /= math.sqrt(self.embed_dim)
         # Prepare  adj to broadT.cast to head size
         adj = T.cast(
-            torch.BoolTensor, adj.align_to("B", "num_heads", "N_left", "N_right")  # type: ignore
+            torch.BoolTensor, adj.align_to("B", "num_heads", "N_left", "N_right")  # type: ignore # noqa:
         )
-        # Inject the graph structure by setting non existent edges' scores to negative infinity
+        # Inject the graph structure by setting non existent edges' scores to
+        # negative infinity
         att_scores_names = T.cast(
             T.Optional[T.List[T.Optional[str]]], att_scores.names
         )  # I'm not sure why mypy needs this cast
@@ -163,11 +172,11 @@ class GraphMultiHeadAttention(Module):
         # Reshape to concatenate the heads again
         new_node_features = new_node_features.transpose("num_heads", "N")
         # new_node_features: (B, N, num_heads, head_size)
-        new_node_features = new_node_features.flatten(("num_heads", "head_size"), "E")  # type: ignore
+        new_node_features = new_node_features.flatten(("num_heads", "head_size"), "E")  # type: ignore # noqa:
         # new_node_features: (B, N, E)
 
         # Pass them through W_o finally
-        new_node_features = self.W_out(new_node_features).refine_names(..., "E")  # type: ignore
+        new_node_features = self.W_out(new_node_features).refine_names(..., "E")  # type: ignore # noqa:
 
         return new_node_features  # type: ignore
 
@@ -180,23 +189,21 @@ class GraphMultiHeadAttention(Module):
         return W.transpose("N", "num_heads")  # type: ignore
 
 
-class Rezero(nn.Module):  # type: ignore
-    def __init__(
-        self, layer: nn.Module  # type: ignore
-    ):
+class Rezero(nnModule):
+    def __init__(self, layer: nn.Module[torch.Tensor]):
+        """Wrap a `layer` with a rezero conneciton."""
         super().__init__()
         self.rezero_weight = nn.Parameter(torch.tensor([0], dtype=torch.float))
         self.layer = layer
 
     def forward(self, h: torch.Tensor, **kwargs: T.Any) -> torch.Tensor:
         after_rezero = h + self.rezero_weight * self.layer(h, **kwargs)
-        return after_rezero  # type: ignore
+        return after_rezero
 
 
-class ResidualAndNorm(nn.Module):  # type: ignore
-    def __init__(
-        self, dim: int, layer: nn.Module  # type: ignore
-    ):
+class ResidualAndNorm(nnModule):
+    def __init__(self, dim: int, layer: nn.Module[torch.Tensor]):
+        """Wrap a `layer` with a residual conneciton and layer normalization."""
         super().__init__()
         self.layer_norm = nn.LayerNorm(dim)
         self.layer = layer
@@ -207,7 +214,7 @@ class ResidualAndNorm(nn.Module):  # type: ignore
         return after_layer_norm
 
 
-class FeedForward(nn.Module):  # type: ignore
+class FeedForward(nnModule):
     def __init__(
         self,
         in_out_dim: int,
@@ -215,6 +222,10 @@ class FeedForward(nn.Module):  # type: ignore
         out_bias: bool,
         feat_dropout_p: float,
     ):
+        """The feedforward from the Transformer.
+
+        Alternatively described as a convolution of width and stride 1.
+        """
         super().__init__()
         self.dropout = nn.Dropout(feat_dropout_p)
         self.W1 = nn.Linear(in_out_dim, intermediate_dim, bias=True)
@@ -227,7 +238,7 @@ class FeedForward(nn.Module):  # type: ignore
         return after_ff
 
 
-class GraphMultiHeadAttentionWrapped(nn.Module):  # type: ignore
+class GraphMultiHeadAttentionWrapped(nnModule):
     def __init__(
         self,
         embed_dim: int,
@@ -236,7 +247,7 @@ class GraphMultiHeadAttentionWrapped(nn.Module):  # type: ignore
         edge_dropout_p: float,
         rezero_or_residual: TT.Literal["rezero", "residual"] = "rezero",
     ):
-        "Wrapped with rezero or residual connection"
+        """Wrapped with rezero or residual connection."""
         super().__init__()
 
         multihead_att = GraphMultiHeadAttention(
@@ -246,7 +257,7 @@ class GraphMultiHeadAttentionWrapped(nn.Module):  # type: ignore
             edge_dropout_p=edge_dropout_p,
         )
 
-        self.wrapper: Module
+        self.wrapper: nn.Module[torch.Tensor]
         if rezero_or_residual == "rezero":
             self.wrapper = Rezero(layer=multihead_att)
         elif rezero_or_residual == "residual":
@@ -269,7 +280,7 @@ class GraphMultiHeadAttentionWrapped(nn.Module):  # type: ignore
         )
 
 
-class FeedForwardWrapped(nn.Module):  # type: ignore
+class FeedForwardWrapped(nnModule):
     def __init__(
         self,
         in_out_dim: int,
@@ -277,6 +288,7 @@ class FeedForwardWrapped(nn.Module):  # type: ignore
         feat_dropout_p: float,
         rezero_or_residual: TT.Literal["rezero", "residual"],
     ):
+        """Wrapped with a rezero or residual connection."""
         super().__init__()
 
         out_bias = True
@@ -289,7 +301,7 @@ class FeedForwardWrapped(nn.Module):  # type: ignore
             feat_dropout_p=feat_dropout_p,
         )
 
-        self.wrapper: Module
+        self.wrapper: nn.Module[torch.Tensor]
         if rezero_or_residual == "rezero":
             self.wrapper = Rezero(layer=ff)
         elif rezero_or_residual == "residual":
@@ -301,10 +313,13 @@ class FeedForwardWrapped(nn.Module):  # type: ignore
         return self.wrapper(node_features)
 
 
-class Embedder(Module, abc.ABC):
-    def __init__(self, tokenizer: T.Optional[tokenizers.Tokenizer]) -> None:
-        """Some embedders don't need to know the tokenizer(for example, positional embedding.
-           I think, only BertEmbedder needs the tokenizer actually.
+class Embedder(nnModule, abc.ABC):
+    def __init__(self, tokenizer: T.Optional[tokenizers.Tokenizer] = None) -> None:
+        """An abstract embedder to specify input and output. # noqa: 
+
+           Args:
+               tokenizer: The tokenizer used. Will be used to assert that the right
+                          tokenizer was used for the embedder.
         """
         super().__init__()
         if tokenizer is not None:
@@ -313,7 +328,8 @@ class Embedder(Module, abc.ABC):
 
     @abc.abstractmethod
     def forward(self, lsls_tok_id: T.List[T.List[int]]) -> torch.Tensor:
-        """
+        """.
+
         Args:
             token_ids:
         Returns:
@@ -326,16 +342,19 @@ class Embedder(Module, abc.ABC):
         pass
 
     def _validate_tokenizer(self) -> None:
-        "Raise exception if self._tokenizer is not correct"
+        """Raise exception if self._tokenizer is not correct."""
         pass
 
 
 class BertEmbedder(Embedder):
-    _model_name = "bert-base-uncased"
+    _model_name: T.Literal["bert-base-uncased"] = "bert-base-uncased"
 
     def __init__(
-        self, tokenizer: tokenizers.Tokenizer, last_how_many_layers: int = 4
+        self,
+        tokenizer: tokenizers.bert.WrappedBertTokenizer,
+        last_how_many_layers: int = 4,
     ) -> None:
+        """Initialize bert model and so on."""
         super().__init__(tokenizer=tokenizer)
         self._embedding_dim = 768 * last_how_many_layers
 
@@ -346,15 +365,18 @@ class BertEmbedder(Embedder):
         self._model = AutoModel.from_pretrained(
             pretrained_model_name_or_path=self._model_name, config=config
         )
+        self._tokenizer = tokenizer
 
     def forward(self, lslstok_id: T.List[T.List[int]]) -> torch.Tensor:
-        """
+        """.
+
         Args:
             token_ids: (B, L)
         Returns:
             embs: (B, L, E)
         """
         breakpoint()
+        # input_ids = self._tokenizer.unwrapped_tokenizer.batch_encode(lslstok_id)
 
         raise NotImplementedError()
         # return self._embedder(token_ids)
@@ -380,6 +402,7 @@ class BasicEmbedder(Embedder):
         padding_idx: int,
         tokenizer: tokenizers.Tokenizer,
     ) -> None:
+        """Wrapper around `nn.Embedding` that conforms to `Embedder`."""
         super().__init__(tokenizer=tokenizer)
         self._embedder = nn.Embedding(
             num_embeddings=num_embeddings,
@@ -390,14 +413,14 @@ class BasicEmbedder(Embedder):
         self._padding_idx = padding_idx
 
     def forward(self, lslstok_id: T.List[T.List[int]]) -> torch.Tensor:
-        """
+        """.
+
         Args:
             token_ids:
         Returns:
             embs: (B, L, E)
-                Where L is the length of the longest lstok_id in lslstok_id
+                  Where L is the length of the longest lstok_id in lslstok_id
         """
-
         padded_lslstok_id = utils.pad_lslsid(
             lslstok_id, padding_tok_id=self._padding_idx
         )
@@ -413,6 +436,10 @@ class BasicEmbedder(Embedder):
 
 class PositionalEmbedder(Embedder):
     def __init__(self, embedding_dim: int) -> None:
+        """Yields positional encoding.
+
+        Note the input is only used for shape/position information.
+        """
         super().__init__()
         initial_max_length = 100
         self._embedding_dim = embedding_dim
@@ -442,9 +469,13 @@ class PositionalEmbedder(Embedder):
         return self.embs[:, :cur_max].expand(batch_size, -1, -1)
 
     def _create_embs(self, max_length: int) -> torch.Tensor:
-        """
+        """Create the sinusodial embeddings.
+
         Returns:
             positional_embs: (1, L, E)
+
+        This is called every time we get a request for a position that exceeds our
+        cached version.
         """
         embs = torch.zeros(  # type: ignore
             1, max_length, self.embedding_dim, names=("B", "L", "E")
