@@ -9,3 +9,16 @@ max-line-length = 88
 extend-ignore =
     # See https://github.com/PyCQA/pycodestyle/issues/373
     E203,
+    # Some classes/functions don't need docstrings.
+    D101
+    D102
+    D103
+    D105
+    # Sometimes a function is described with a noun better
+    D401
+    # This warning doesn't distinguish referring to superclass signatures.
+    D402
+
+# Exclude stubs files
+exclude =
+    *.pyi

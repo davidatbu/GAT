@@ -1,3 +1,4 @@
+"""Basic NLP preprocessing. Also, caching preprocessing."""
 from __future__ import annotations
 
 import abc
@@ -27,6 +28,12 @@ logger = logging.getLogger("__main__")
 
 
 class TextSource(T.Iterable[SentExample], T.Sized):
+    """A source of labelled examples.
+
+    Important is the __repr__ method. It is used to avoid duplicaiton of
+    data processing.
+    """
+
     def __getitem__(self, idx: int) -> SentExample:
         raise NotImplementedError()
 
@@ -42,30 +49,48 @@ class TextSource(T.Iterable[SentExample], T.Sized):
 
 
 class FromIterableTextSource(TextSource):
-    def __init__(self, iterable: T.Iterable[SentExample]) -> None:
+    """Can just use a list instead of this, but that wouldn't pass mypy.
+
+    Also, actually turns iterable into list. *facepalm*
+    """
+
+    def __init__(self, iterable: T.Iterable[T.Tuple[T.List[str], str]]) -> None:
+        """Turn iterable into list and set attribute.
+
+        Args:
+            iterable: An iterable that yields a list of sentences and a label.
+                      Every yielded example must have the same number of sentences.
+        """
         self._ls = list(iterable)
 
     def __len__(self) -> int:
+        """Get length."""
         return len(self._ls)
 
     def __getitem__(self, idx: int) -> SentExample:
+        """Get item."""
         if idx < 0 or idx > len(self):
             raise IndexError(
-                f"f{self.__class__.__name__} has only {len(self)} items. {idx} was asked, which is either negative or "
-                "greater than length."
+                f"f{self.__class__.__name__} has only {len(self)} items. {idx} was"
+                " asked, which is either negative or greater than length."
             )
-        return self._ls[idx]
+        return SentExample(*self._ls[idx])
 
     def __repr__(self) -> str:
+        """Need to use hashlib here because hash() is not reproducible acrosss run."""
         return hashlib.sha1(str(self._ls).encode()).hexdigest()
 
 
 class ConcatTextSource(TextSource):
+    """Not sure why I need this."""
+
     def __init__(self, arg: TextSource, *args: TextSource):
+        """Init."""
         self.lstxt_src = (arg,) + args
         self.lens = list(map(len, self.lstxt_src))
 
     def __getitem__(self, idx: int) -> SentExample:
+        """Get i-th item."""
         cur_txt_src_i = 0
         cur_len = len(self.lstxt_src[cur_txt_src_i])
         while idx >= cur_len:
@@ -85,15 +110,22 @@ class ConcatTextSource(TextSource):
 
 
 class CsvTextSource(TextSource):
+    """Supports reading a CSV with multiple columns of text and one label column."""
+
     def __init__(
         self,
         fp: Path,
         lstxt_col: T.List[str],
         lbl_col: str,
-        allow_unlablled: bool,
         csv_reader_kwargs: T.Dict[str, T.Any] = {},
     ) -> None:
+        """Init.
 
+        Args:
+            lstxt_col: the column headers for the text column.
+            lbl_col: the column header for the label column.
+            csv_reader_kwargs:
+        """
         self.fp = fp
 
         with fp.open() as f:
@@ -102,8 +134,8 @@ class CsvTextSource(TextSource):
             for txt_col in lstxt_col:
                 if headers.count(txt_col) != 1 or headers.count(lbl_col) != 1:
                     raise Exception(
-                        f"{txt_col} or {lbl_col} not found as a header in csv flie {str(fp)},"
-                        " or were found more than once."
+                        f"{txt_col} or {lbl_col} not found as a header"
+                        " in csv flie {str(fp)}, or were found more than once."
                     )
             lstxt_col_i = [headers.index(txt_col) for txt_col in lstxt_col]
             lbl_col_i = headers.index(lbl_col)
@@ -126,41 +158,63 @@ class CsvTextSource(TextSource):
         return len(self.rows)
 
 
-class Cacheable:
-    """Subclassers must implement a meaningful __repr___"""
+class Cacheable(abc.ABC):
+    """Support caching anything.
+
+    Look at the abstract methods defined below to understand how to use this.
+    """
 
     def __init__(self, cache_dir: Path, ignore_cache: bool) -> None:
-
+        """Check if a cached version is available."""
         # Use the  repr to create a cache dir
-        obj_repr_hash = hashlib.sha1(str(self).encode()).hexdigest()
+        obj_repr_hash = hashlib.sha1(repr(self).encode()).hexdigest()
         self.specific_cache_dir = cache_dir / obj_repr_hash
         self.specific_cache_dir.mkdir(exist_ok=True)
 
-        if self.cached_exists() and not (ignore_cache):
+        if self._cached_exists() and not (ignore_cache):
             logger.info(f"{obj_repr_hash} found cached.")
-            self.from_cache()
+            self._from_cache()
         else:
             logger.info(f"{obj_repr_hash} not found cached. Processing ...")
             self.process()
             self.to_cache()
 
-    @property
-    def cached_attrs(self) -> T.List[str]:
-        raise NotImplementedError()
+    @abc.abstractmethod
+    def __repr__(self) -> str:
+        """Return a unique representation of the settings for the class.
 
+        What is returned must be:
+            1. The same across instances that should share the same cached attributes.
+            2. Reproducible across multiple Python runs(so `hash()` doesn't work).
+        """
+        pass
+
+    @abc.abstractproperty
+    def _cached_attrs(self) -> T.List[str]:
+        """List of attributes that will be cached/restored from cache."""
+        pass
+
+    @abc.abstractmethod
     def process(self) -> None:
-        raise NotImplementedError()
+        """Do the processing that will set the _cached_attrs.
 
-    def cached_exists(self) -> bool:
+        This function will not be called if a cached version is found.
+        After this is called, every attribute in self._cached_attrs must be set.
+        """
+        pass
+
+    def _cached_exists(self) -> bool:
+        """Check if a cached version of the cached attributes exist."""
         return all(
             [
                 self._cache_fp_for_attr(attr_name).exists()
-                for attr_name in self.cached_attrs
+                for attr_name in self._cached_attrs
             ]
         )
 
-    def from_cache(self) -> None:
-        for attr_name in self.cached_attrs:
+    def _from_cache(self) -> None:
+        """Restore cached attributes."""
+        for attr_name in self._cached_attrs:
             fp = self._cache_fp_for_attr(attr_name)
 
             with fp.open("rb") as fb:
@@ -168,10 +222,12 @@ class Cacheable:
             setattr(self, attr_name, obj)
 
     def _cache_fp_for_attr(self, attr_name: str) -> Path:
+        """Return the cache file name for a specific attribute."""
         return self.specific_cache_dir / f"{attr_name}.torch"
 
     def to_cache(self) -> None:
-        for attr_name in self.cached_attrs:
+        """Save cached attributes to cache."""
+        for attr_name in self._cached_attrs:
 
             fp = self._cache_fp_for_attr(attr_name)
             obj = getattr(self, attr_name)
@@ -179,108 +235,131 @@ class Cacheable:
                 torch.save(obj, fb)  # type: ignore
 
 
-class Vocab(abc.ABC):
-    """
-    Rule:
-        For every method, have a batch version.
-    """
+class Labels:
+    """A class to encapsulate turning labels into ids."""
 
-    @abc.abstractmethod
-    def __repr__(self) -> str:
-        pass
+    def __init__(self, id2lbl: T.List[str]) -> None:
+        """Set self._id2lbl.
 
-    def simplify_txt(self, txt: str) -> str:
-        """This would be the place to do things like lowercasing, stripping out punctuation, ..etc"""
-        return txt
-
-    def batch_simplify_txt(self, lstxt: T.List[str]) -> T.List[str]:
-        return [self.simplify_txt(txt) for txt in lstxt]
-
-    @abc.abstractproperty
-    def tokenizer(self) -> tokenizers.Tokenizer:
-        pass
-
-    @abc.abstractmethod
-    def get_toks(self, lstok_id: T.List[int]) -> T.List[str]:
-        pass
-
-    def batch_get_toks(self, lslstok_id: T.List[T.List[int]]) -> T.List[T.List[str]]:
-        return [self.get_toks(lstok_id) for lstok_id in lslstok_id]
-
-    @abc.abstractmethod
-    def get_tok_ids(self, lsword: T.List[str]) -> T.List[int]:
-        pass
-
-    def batch_get_tok_ids(self, lslsword: T.List[T.List[str]]) -> T.List[T.List[int]]:
-        return [self.get_tok_ids(lsword) for lsword in lslsword]
-
-    def tokenize_and_get_tok_ids(self, txt: str) -> T.List[int]:
-        return self.get_tok_ids(self.tokenizer.tokenize(txt))
-
-    def batch_tokenize_and_get_tok_ids(self, lstxt: T.List[str]) -> T.List[T.List[int]]:
-        return self.batch_get_tok_ids(self.tokenizer.batch_tokenize(lstxt))
-
-    @abc.abstractmethod
-    def get_lbl_id(self, lbl: str) -> int:
-        pass
-
-    def batch_get_lbl_id(self, lslbl: T.List[str]) -> T.List[int]:
-        return [self.get_lbl_id(lbl) for lbl in lslbl]
-
-    @abc.abstractmethod
-    def get_lbl(self, lbl_id: int) -> str:
-        pass
-
-    def batch_get_lbl(self, lslbl_id: T.List[int]) -> T.List[str]:
-        return [self.get_lbl(lbl_id) for lbl_id in lslbl_id]
-
-    @abc.abstractproperty
-    def padding_tok_id(self) -> int:
-        pass
-
-    @abc.abstractproperty
-    def cls_tok_id(self) -> int:
-        pass
-
-    @abc.abstractproperty
-    def unk_tok_id(self) -> int:
-        pass
-
-
-class Labels(Cacheable):
-    def __init__(self, cache_dir: Path, ignore_cache: bool = False) -> None:
-        super().__init__(cache_dir=cache_dir, ignore_cache=ignore_cache)
+        Args:
+            id2lbl: A list of unique ids. Their position in the list will be their id.
+        """
+        self._id2lbl = id2lbl
 
         self._lbl2id: T.Dict[str, int] = {
             lbl: id_ for id_, lbl in enumerate(self._id2lbl)
         }
 
     @property
-    def cached_attrs(self) -> T.List[str]:
+    def _cached_attrs(self) -> T.List[str]:
+        """Look at superclass doc."""
         return ["_id2lbl"]
 
     def get_lbl_id(self, lbl: str) -> int:
+        """Get the id of a label."""
         return self._lbl2id[lbl]
 
     def get_lbl(self, lbl_id: int) -> str:
+        """Given an id, return the label."""
         return self._id2lbl[lbl_id]
+
+    def batch_get_lbl_id(self, lslbl: T.List[str]) -> T.List[int]:
+        return [self.get_lbl_id(lbl) for lbl in lslbl]
+
+    def batch_get_lbl(self, lslbl_id: T.List[int]) -> T.List[str]:
+        return [self.get_lbl(lbl_id) for lbl_id in lslbl_id]
+
+
+class Vocab(Cacheable, abc.ABC):
+    """A class to encapsulate preprocessing of text, and mapping tokens to ids.
+
+    Also contains a `Labels` object.
+    """
+
+    def simplify_txt(self, txt: str) -> str:
+        """Do things like lowercasing stripping out punctuation, ..etc."""
+        return txt
+
+    def batch_simplify_txt(self, lstxt: T.List[str]) -> T.List[str]:
+        """Call simplify_txt on a batch."""
+        return [self.simplify_txt(txt) for txt in lstxt]
+
+    @abc.abstractproperty
+    def tokenizer(self) -> tokenizers.Tokenizer:
+        """Return the tokenizer used to produce this vocabulary."""
+        pass
+
+    @abc.abstractmethod
+    def get_toks(self, lstok_id: T.List[int]) -> T.List[str]:
+        """Get a list of tokens given a list of token ids."""
+        pass
+
+    def batch_get_toks(self, lslstok_id: T.List[T.List[int]]) -> T.List[T.List[str]]:
+        """Batch version of get_toks."""
+        return [self.get_toks(lstok_id) for lstok_id in lslstok_id]
+
+    @abc.abstractmethod
+    def get_tok_ids(self, lsword: T.List[str]) -> T.List[int]:
+        """Get token ids for the tokens in vocab."""
+        pass
+
+    def batch_get_tok_ids(self, lslsword: T.List[T.List[str]]) -> T.List[T.List[int]]:
+        """Batch version of get_tok_ids."""
+        return [self.get_tok_ids(lsword) for lsword in lslsword]
+
+    def tokenize_and_get_tok_ids(self, txt: str) -> T.List[int]:
+        """Convinience function to call tokenize and get tok ids in one."""
+        return self.get_tok_ids(self.tokenizer.tokenize(txt))
+
+    def batch_tokenize_and_get_tok_ids(self, lstxt: T.List[str]) -> T.List[T.List[int]]:
+        """Batch version."""
+        return self.batch_get_tok_ids(self.tokenizer.batch_tokenize(lstxt))
+
+    @abc.abstractproperty
+    def padding_tok_id(self) -> int:
+        """The padding token id."""
+        pass
+
+    @abc.abstractproperty
+    def cls_tok_id(self) -> int:
+        """The "CLS" token id.
+
+        Currently, we imitate BERT and create a CLS node to connect words to.
+        """
+        pass
+
+    @abc.abstractproperty
+    def unk_tok_id(self) -> int:
+        """Token id for uknown token."""
+        pass
+
+    @abc.abstractproperty
+    def labels(self) -> Labels:
+        pass
 
 
 class BasicVocab(Vocab, Cacheable):
-    """
-    Supports lowercasing option, and having a minimum count(unk tokens),
-    and reserving one initial token ids for special tokens to be used by the model(like [CLS]).
+    """Vocab subclass that should work for most non-sub-word level tasks.
+
+    Supports lowercasing, having a minimum count(unk tokens).
     """
 
     def __init__(
         self,
         txt_src: TextSource,
-        cache_dir: Path,
         tokenizer: tokenizers.base.Tokenizer,
+        cache_dir: Path,
         lower_case: bool = True,
         unk_thres: int = 1,
         ignore_cache: bool = False,
     ) -> None:
+        """Set self._word2id after doing self.process() (via Cacheable.__init__()).
+
+        Args:
+            tokenizer: Look at superclass doc.
+            unk_thres: the minimum num of times a token has to appear to be included
+                       in vocab.
+        """
         self._lower_case = lower_case
         self._unk_thres = unk_thres
         self._txt_src = txt_src
@@ -295,18 +374,18 @@ class BasicVocab(Vocab, Cacheable):
         self._word2id: T.Dict[str, int] = {
             word: id_ for id_, word in enumerate(self._id2word)
         }
+        self._labels = Labels(self._id2lbl)
 
     def simplify_txt(self, txt: str) -> str:
-        """This would be the place to do things like lowercasing, stripping out punctuation, ..etc"""
+        """Lower case if necessary."""
         if self._lower_case:
             return txt.lower()
         return txt
 
     @property
-    def cached_attrs(self) -> T.List[str]:
-        return [
-            "_id2word",
-        ]
+    def _cached_attrs(self) -> T.List[str]:
+        """Look at superclass doc."""
+        return ["_id2word", "_id2lbl"]
 
     @property
     def padding_tok_id(self) -> int:
@@ -321,9 +400,12 @@ class BasicVocab(Vocab, Cacheable):
         return 2
 
     def __repr__(self) -> str:
+        """Look at superclass doc."""
         return (
-            f"BasicVocab-"
-            f"tokenizer_{self.tokenizer}_lower_case_{self._lower_case}-unk_thres_{self._unk_thres}-"
+            f"BasicVocab"
+            f"-tokenizer_{self.tokenizer}"
+            f"-lower_case_{self._lower_case}"
+            f"-unk_thres_{self._unk_thres}"
             f"txt_src_{self._txt_src}"
         )
 
@@ -363,17 +445,27 @@ class BasicVocab(Vocab, Cacheable):
         logger.info(f"Made id2word of length {len(self._id2word)}")
         logger.info(f"Made id2lbl of length {len(self._id2lbl)}")
 
+    def labels(self) -> Labels:
+        return self._labels
+
 
 class BertVocab(Vocab):
+    """Wrapper around the tokenizer from the transformers library.
+
+    Inherits from `Vocab`.
+    """
+
     _model_name = "bert-base-uncased"
 
-    def __init__(self, tokenizer: tokenizers.bert.WrappedBertTokenizer) -> None:
-        """Why pass in tokenizer when we only support tokenizers.bert.WrappedBertTokenizer?
-        Because we want to make sure that it is indeed that tokenizer that is being used for this vocab.
-        """
-
+    def __init__(
+        self,
+        tokenizer: tokenizers.bert.WrappedBertTokenizer,
+        cache_dir: Path,
+        ignore_cache: bool = False,
+    ) -> None:
+        """Look at superclass doc."""
         self._tokenizer = tokenizer
-        super().__init__()
+        super().__init__(cache_dir=cache_dir, ignore_cache=ignore_cache)
 
         self._pad_id = 0
         self._cls_id = 1
@@ -420,28 +512,10 @@ class BertVocab(Vocab):
     def tokenize_and_get_tok_ids(self, txt: str) -> T.List[int]:
         return self.get_tok_ids(self.tokenizer.tokenize(txt))
 
-    def get_lbl_id(self, lbl: str) -> int:
-        return self._lbl2id[lbl]
 
-    def get_lbl(self, lbl_id: int) -> str:
-        return self._id2lbl[lbl_id]
-
-
-class SliceDataset(Dataset):  # type: ignore
-    def __init__(self, orig_ds: Dataset, n: int) -> None:  # type: ignore
-        assert len(orig_ds) >= n
-        self.orig_ds = orig_ds
-        self.n = n
-
-    def __len__(self) -> int:
-        return self.n
-
-    def __getitem__(self, i: int) -> T.Any:
-        if i >= len(self):
-            raise IndexError("SliceDataset ended.")
-        return self.orig_ds[i]
-
-
+# Check here
+# https://mypy.readthedocs.io/en/stable/common_issues.html#using-classes-that-are-generic-in-stubs-but-not-at-runtime
+# for why.
 if T.TYPE_CHECKING:
     BaseDataset = Dataset[SentgraphExample]
 else:
@@ -449,6 +523,16 @@ else:
 
 
 class SentenceGraphDataset(BaseDataset, Cacheable):
+    """A dataset that turns a TextSource into a dataset of `SentgraphExample`s.
+
+    We handle here:
+        1. That a TextSource might have multiple text columns per example, and therefore
+           batched processing (necessary for speed for SRL for example) needs special
+           care.
+        2. That we definitely want to cache processed results(notice we inherit from
+           Cacheable).
+    """
+
     def __init__(
         self,
         txt_src: TextSource,
@@ -458,36 +542,53 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
         ignore_cache: bool = False,
         processing_batch_size: int = 800,
     ):
+        """.
 
-        self.sent2graph = sent2graph
-        self.txt_src = txt_src
-        self.vocab = vocab
+        Args:
+            txt_src:
+            sent2graph:
+            vocab: We make sure here that the Sent2Graph passed and the Vocab passed
+                   use the same tokenizer.
+                   Also, we use vocab.tokenizer to tokenize before doing
+                   sent2graph.to_graph().
+            cache_dir: Look at Cacheable doc.
+            ignore_cache: Look at Cacheable doc.
+        """
+        self._sent2graph = sent2graph
+        self._txt_src = txt_src
+        self._vocab = vocab
         self._processing_batch_size = processing_batch_size
 
         Cacheable.__init__(self, cache_dir=cache_dir, ignore_cache=ignore_cache)
 
     @property
-    def cached_attrs(self) -> T.List[str]:
+    def _cached_attrs(self) -> T.List[str]:
         return [
             "_lssentgraph_ex",
         ]
 
     def __repr__(self) -> str:
-        return f"SentenceGraphDataset-sent2graph_{self.sent2graph}-txt_src_{self.txt_src}-vocab_{self.vocab}"
+        return (
+            "SentenceGraphDataset"
+            f"-sent2graph_{self._sent2graph}"
+            f"-txt_src_{self._txt_src}"
+            f"-vocab_{self._vocab}"
+        )
 
     def process(self) -> None:
+        """This is where it all happens."""
         logger.info("Getting sentence graphs ...")
-        batch_size = min(self._processing_batch_size, len(self.txt_src))
+        batch_size = min(self._processing_batch_size, len(self._txt_src))
         # Do batched SRL prediction
         lslssent: T.List[T.List[str]]
         # Group the sent_ex's into batches
-        batched_lssent_ex = grouper(self.txt_src, n=batch_size)
+        batched_lssent_ex = grouper(self._txt_src, n=batch_size)
 
         lssentgraph_ex: T.List[SentgraphExample] = []
-        num_batches = (len(self.txt_src) // batch_size) + int(
-            len(self.txt_src) % batch_size != 0
+        num_batches = (len(self._txt_src) // batch_size) + int(
+            len(self._txt_src) % batch_size != 0
         )
-        self.sent2graph.init_workers()
+        self._sent2graph.init_workers()
         for lssent_ex in tqdm(
             batched_lssent_ex,
             desc=f"Turning sentence into graphs with batch size {batch_size}",
@@ -496,7 +597,7 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
             one_batch_lssentgraph_ex = self._batch_process_sent_ex(lssent_ex)
             lssentgraph_ex.extend(one_batch_lssentgraph_ex)
 
-        self.sent2graph.finish_workers()
+        self._sent2graph.finish_workers()
         self._lssentgraph_ex = lssentgraph_ex
 
     def _batch_process_sent_ex(
@@ -507,17 +608,16 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
         lslbl: T.List[str]
         lslssent, lslbl = map(list, zip(*lssent_ex))  # type: ignore
 
-        # This part is complicated because we allow an arbitrary number of sentences per example,
-        # AND we want to do batched prediction.
+        # This part is complicated because we allow an arbitrary number of sentences
+        # per example, AND we want to do batched prediction.
         # The trick is, for each batch do one "column" of the batch at a time.
 
-        # Easily deadl with lblids
-        lslbl_id = self.vocab.batch_get_lbl_id(lslbl)
+        lslbl_id = self._vocab.labels.batch_get_lbl_id(lslbl)
 
         lsper_column_sentgraph: T.List[T.List[SentGraph]] = []
         for per_column_lssent in zip(*lslssent):
 
-            # For turning the setnence into a graph
+            # For turning the sentence into a graph
             # Note that we are bypassing any vocab filtering(like replacing with UNK)
             per_column_lsword = self.vocab.tokenizer.batch_tokenize(
                 self.vocab.batch_simplify_txt(list(per_column_lssent))
@@ -640,18 +740,15 @@ def load_splits(
     delimiter: str = "\t",
     unk_thres: int = 2,
 ) -> T.Tuple[
-    T.Dict[str, Dataset[SentgraphExample]],  # line breaker  # lb
-    T.Dict[str, CsvTextSource],
-    Vocab,
+    T.Dict[str, SentenceGraphDataset], T.Dict[str, CsvTextSource], Vocab,
 ]:
-
+    """Build `Vocab` and `Labels` from training data. Process all splits."""
     assert "train" in splits
     txt_srcs = {
         split: CsvTextSource(
             fp=(dataset_dir / f"{split}.{fp_ending}"),
             lstxt_col=lstxt_col,
             lbl_col=lbl_col,
-            allow_unlablled=False,
             csv_reader_kwargs={"delimiter": delimiter},
         )
         for split in splits
