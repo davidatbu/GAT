@@ -26,7 +26,7 @@ def sst_dataset() -> SentenceGraphDataset:
     return dataset
 
 
-@pytest.mark.skip(reason="need to setup actual_data/")  # type: ignore
+@pytest.mark.skip(reason="need to setup actual_data/")
 def test_svg(sst_dataset: SentenceGraphDataset) -> None:
     with open("example.svg", "w") as f:
         sentgraph = sst_dataset[2].lssentgraph[0]

@@ -1,32 +1,43 @@
-"""Tests for layers."""
+"""Tests for layers.
+
+PyTest is useful. But it's not intuitive at all. Please check out how PyTest works
+first.
+"""
 from __future__ import annotations
 
+import tempfile
 import typing as T
+from pathlib import Path
 
 import pytest
 import torch
 from torch import nn
 from tqdm import tqdm  # type: ignore
 
-from ..config import base as config
-from Gat.data import tokenizers
+from Gat import data
+from Gat.config import base as config
 from Gat.neural import layers
 
 
+@pytest.fixture(scope="session")
+def temp_dir() -> Path:
+    return Path(tempfile.mkdtemp(prefix="GAT_test"))
+
+
+@pytest.fixture(scope="session")
+def use_cuda() -> bool:
+    # This was stolen from private torch code
+    if not hasattr(torch._C, "_cuda_isDriverSufficient"):
+        return False
+    return torch.cuda.is_available()
+
+
 class _GatSetup(T.NamedTuple):
-    all_config: config.EverythingConfig
+    all_config: config.EverythingConfig[config.GATConfig]
     seq_length: int
     node_features: torch.Tensor
     adj: torch.Tensor
     node_labels: torch.Tensor
-
-
-@pytest.fixture(scope="module")
-def use_cuda() -> bool:
-    # This was stolen from private torch code
-    if not hasattr(torch._C, "_cuda_isDriverSufficient"):  # type: ignore
-        return False
-    return torch.cuda.is_available()
 
 
 @pytest.fixture
@@ -51,7 +62,7 @@ def gat_setup(use_cuda: bool) -> _GatSetup:
         lr=1e-3,
         epochs=99,
         dataset_dir="99",
-        sent2graph_name="99",
+        sent2graph_name="99",  # type: ignore
         train_batch_size=3,
         eval_batch_size=99,
     )
@@ -133,7 +144,8 @@ def test_best_num_heads(gat_setup: _GatSetup, use_cuda: bool) -> None:
             multihead_att.cuda()
         adam = torch.optim.Adam(
             # Include key_edge_features in features to be optimized
-            [key_edge_features] + list(multihead_att.parameters()),
+            [key_edge_features]
+            + T.cast(T.List[torch.FloatTensor], list(multihead_att.parameters())),
             lr=1e-3,
         )
         multihead_att.train()
@@ -164,59 +176,70 @@ def test_best_num_heads(gat_setup: _GatSetup, use_cuda: bool) -> None:
     )
 
 
-class _TokenizerSetup(T.NamedTuple):
-    spacy_tokenizer: tokenizers.spacy.WrappedSpacyTokenizer
-    bert_tokenizer: tokenizers.bert.WrappedBertTokenizer
-    padding_idx: int
+class _VocabSetup(T.NamedTuple):
+    basic_vocab: data.BasicVocab
+    bert_vocab: data.BertVocab
     lslstok_id: T.List[T.List[int]]
 
 
-@pytest.fixture
-def tokenizer_setup() -> _TokenizerSetup:
-    spacy_tokenizer = tokenizers.spacy.WrappedSpacyTokenizer()
-    bert_tokenizer = tokenizers.bert.WrappedBertTokenizer()
-    padding_idx = 0
+@pytest.fixture(scope="session")
+def vocab_setup(temp_dir: Path) -> _VocabSetup:
+    txt_src = data.FromIterableTextSource(
+        [
+            (["guard your heart"], "yes"),
+            (["eat from the tree of the knowledge of good and evil"], "no"),
+        ]
+    )
+
+    basic_vocab = data.BasicVocab(
+        txt_src=txt_src,
+        tokenizer=data.tokenizers.spacy.WrappedSpacyTokenizer(),
+        cache_dir=temp_dir,
+        unk_thres=2,
+    )
+
+    bert_vocab = data.BertVocab(
+        txt_src=txt_src,
+        tokenizer=data.tokenizers.bert.WrappedBertTokenizer(),
+        cache_dir=temp_dir,
+    )
 
     lslstok_id = [
         [1, 0],
         [2],
     ]
-    return _TokenizerSetup(spacy_tokenizer, bert_tokenizer, padding_idx, lslstok_id)
+    return _VocabSetup(
+        basic_vocab=basic_vocab, bert_vocab=bert_vocab, lslstok_id=lslstok_id
+    )
 
 
-def test_basic_embedder(tokenizer_setup: _TokenizerSetup) -> None:
+def test_basic_embedder(vocab_setup: _VocabSetup) -> None:
     basic_embedder = layers.BasicEmbedder(
-        tokenizer=tokenizer_setup.spacy_tokenizer,
+        vocab=vocab_setup.basic_vocab,
         num_embeddings=3,
         embedding_dim=768,
-        padding_idx=tokenizer_setup.padding_idx,
+        padding_idx=vocab_setup.basic_vocab.padding_tok_id,
     )
-    embs = basic_embedder.forward(tokenizer_setup.lslstok_id)
+    embs = basic_embedder.forward(vocab_setup.lslstok_id)
     assert embs[0, 1].sum().item() == 0.0
     embs_size = tuple(embs.size())
     assert embs_size == (2, 2, basic_embedder.embedding_dim)
 
 
-def test_pos_embedder(tokenizer_setup: _TokenizerSetup) -> None:
+def test_pos_embedder(vocab_setup: _VocabSetup) -> None:
     pos_embedder = layers.PositionalEmbedder(embedding_dim=768)
-    embs = pos_embedder.forward(tokenizer_setup.lslstok_id)
+    embs = pos_embedder.forward(vocab_setup.lslstok_id)
     embs_size = tuple(embs.size())
     assert embs_size == (2, 2, pos_embedder.embedding_dim)
 
 
-@pytest.mark.skip(reason="test not yet completed.")
-def test_bert(tokenizer_setup: _TokenizerSetup) -> None:
-    lslstok = self._bert_tokenizer.batch_tokenize(
-        ["i love embeddings."], ["don't you?"]
-    )
-    embedder = layers.BertEmbedder(
-        tokenizer=self._bert_tokenizer, last_how_many_layers=4
-    )
-    embs = embedder.forward(self._lslstok_id)
-    embs_size = tuple(embs.size())
-    tools.eq_(
-        embs_size,
-        (2, 2, embedder.embedding_dim),
-        msg=f"embs_size is {embs_size} "
-        f"instead of {(2,2, pos_embedder.embedding_dim)}",
-    )
+def test_bert(vocab_setup: _VocabSetup) -> None:
+
+    lssent = ["pacification", "something"]
+    lslstok_id = vocab_setup.bert_vocab.batch_tokenize_and_get_tok_ids(lssent)
+
+    embedder = layers.BertEmbedder(vocab=vocab_setup.bert_vocab, last_how_many_layers=4)
+    our_embs = embedder.forward(lslstok_id)
+
+    max_seq_len = max(map(len, lslstok_id))
+    assert our_embs.size("L") == max_seq_len

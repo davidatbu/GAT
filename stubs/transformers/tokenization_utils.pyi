@@ -1,9 +1,32 @@
+"""BIG WARNING
+
+These stubs are very, very incomplete. They are also wrong in that some overloaded
+functions are annotated with only one of their signatures.
+
+I just annotate the parts of the library that I use as I go.
+"""
 import typing as T
 
 class SpecialTokensMixin:
-    pass
+    @property
+    def unk_token(self) -> str: ...
+    @property
+    def sep_token(self) -> str: ...
+    @property
+    def cls_token(self) -> str: ...
+    @property
+    def pad_token(self) -> str: ...
+    @property
+    def unk_token_id(self) -> int: ...
+    @property
+    def sep_token_id(self) -> int: ...
+    @property
+    def pad_token_id(self) -> int: ...
+    @property
+    def cls_token_id(self) -> int: ...
 
 class PreTrainedTokenizer(SpecialTokensMixin):
-    pass
+    def convert_tokens_to_ids(self, tokens: T.List[str]) -> T.List[int]: ...
+    def convert_ids_to_tokens(self, ids: T.List[int]) -> T.List[str]: ...
 
 __all__ = ["PreTrainedTokenizer"]

@@ -1,3 +1,4 @@
+"""wrapped spacy tokenizer."""
 import typing as T
 
 import spacy  # type: ignore
@@ -6,7 +7,10 @@ from ..tokenizers import base
 
 
 class WrappedSpacyTokenizer(base.Tokenizer):
+    """Wrapper around `nlp=spacy.load()` and `nlp(txt)`."""
+
     def __init__(self) -> None:
+        """Loads spacy model."""
         # We're doing only the base model for now
         self._spacy_model_name = "en_core_web_sm"
         self._tokenizer = spacy.load(
@@ -19,3 +23,6 @@ class WrappedSpacyTokenizer(base.Tokenizer):
 
     def __repr__(self) -> str:
         return f"WrappedSpacyTokenizer_{self._spacy_model_name}"
+
+
+__all__ = ["WrappedSpacyTokenizer"]

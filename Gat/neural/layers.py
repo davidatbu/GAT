@@ -12,7 +12,9 @@ import typing_extensions as TT
 from torch import nn
 from transformers import AutoConfig
 from transformers import AutoModel
+from transformers import BertModel
 
+from Gat import data
 from Gat import utils
 from Gat.data import tokenizers
 
@@ -314,17 +316,23 @@ class FeedForwardWrapped(nnModule):
 
 
 class Embedder(nnModule, abc.ABC):
-    def __init__(self, tokenizer: T.Optional[tokenizers.Tokenizer] = None) -> None:
+    """An abstract class.
+
+    The intended behavior for all subclassers is that their `forward()` accepts a
+    T.List[T.List[str]], pads each T.List[str] to the maximum T.List[str] present (or
+    the maximum that the underlying embedding source supports, ie BERT) and then outputs
+    a torch.Tensor.
+    """
+
+    def __init__(self, vocab: T.Optional[data.Vocab] = None) -> None:
         """An abstract embedder to specify input and output. # noqa: 
 
            Args:
-               tokenizer: The tokenizer used. Will be used to assert that the right
-                          tokenizer was used for the embedder.
+               vocab: Needed to access vocab.padding_tok_id, but not needed for "PositionalEmbedder".
         """
         super().__init__()
-        if tokenizer is not None:
-            self._tokenizer = tokenizer
-            self._validate_tokenizer()
+        if vocab is not None:
+            self._vocab = vocab
 
     @abc.abstractmethod
     def forward(self, lsls_tok_id: T.List[T.List[int]]) -> torch.Tensor:
@@ -341,45 +349,74 @@ class Embedder(nnModule, abc.ABC):
     def embedding_dim(self) -> int:
         pass
 
-    def _validate_tokenizer(self) -> None:
-        """Raise exception if self._tokenizer is not correct."""
+    @abc.abstractproperty
+    def max_seq_len(self) -> T.Optional[int]:
+        """Maximum length of a sequence that can be outputted."""
         pass
 
 
 class BertEmbedder(Embedder):
     _model_name: T.Literal["bert-base-uncased"] = "bert-base-uncased"
 
-    def __init__(
-        self,
-        tokenizer: tokenizers.bert.WrappedBertTokenizer,
-        last_how_many_layers: int = 4,
-    ) -> None:
+    def __init__(self, vocab: data.BertVocab, last_how_many_layers: int = 4,) -> None:
         """Initialize bert model and so on."""
-        super().__init__(tokenizer=tokenizer)
+        super().__init__(vocab=vocab)
         self._embedding_dim = 768 * last_how_many_layers
 
         # Setup transformers BERT
         config = AutoConfig.from_pretrained(
             pretrained_model_name_or_path=self._model_name, output_hidden_states=True
         )
-        self._model = AutoModel.from_pretrained(
+        self._model: BertModel = AutoModel.from_pretrained(
             pretrained_model_name_or_path=self._model_name, config=config
         )
-        self._tokenizer = tokenizer
+
+        self._vocab: data.BertVocab
 
     def forward(self, lslstok_id: T.List[T.List[int]]) -> torch.Tensor:
-        """.
+        """Get the BERT token embeddings.
+
+        This does not return embeddings for the [CLS] token, or the [SEP] token.
+        lslstok_id should not contain the [CLS] token, or the [SEP] token, either.
 
         Args:
-            token_ids: (B, L)
+            token_ids:
         Returns:
             embs: (B, L, E)
+                B = len(token_ids)
+                L = self._model.config.max_position_embeddings
+                And E is the num of dimensions the BERT vectors
         """
-        breakpoint()
-        # input_ids = self._tokenizer.unwrapped_tokenizer.batch_encode(lslstok_id)
+        cls_tok_id = self._vocab.tokenizer.unwrapped_tokenizer.cls_token_id
+        sep_tok_id = self._vocab.tokenizer.unwrapped_tokenizer.sep_token_id
 
-        raise NotImplementedError()
-        # return self._embedder(token_ids)
+        unpadded_with_special_toks_lslstok_id = [
+            [cls_tok_id] + lstok_id + [sep_tok_id] for lstok_id in lslstok_id
+        ]
+
+        padded_lslstok_id = utils.pad_lslsid(
+            unpadded_with_special_toks_lslstok_id,
+            padding_tok_id=self._vocab.padding_tok_id,
+            max_len=self._model.config.max_position_embeddings,
+        )
+        input_ids = torch.tensor(
+            padded_lslstok_id,
+            dtype=torch.long,
+            device=next(self._model.parameters()).device,
+        )
+        outputs = self._model(input_ids)
+
+        last_hidden_outputs = outputs[0]
+        last_hidden_outputs = last_hidden_outputs.refine_names(
+            "B", "L", "E"  # type: ignore
+        )
+
+        # Remove [CLS] and [SEP] embeddings, truncate to max sequence length
+        max_length = min(self.max_seq_len, max(map(len, lslstok_id)))
+        assert max_length is not None
+        last_hidden_outputs = last_hidden_outputs[:, 1 : max_length + 1, :]
+
+        return last_hidden_outputs
 
     @property
     def embedding_dim(self) -> int:
@@ -393,6 +430,13 @@ class BertEmbedder(Embedder):
                 f" Only {acceptable_tokenizer_repr} is."
             )
 
+    @property
+    def max_seq_len(self) -> T.Optional[int]:
+        """Look at superclass doc."""
+        # The -2 here is because [CLS] and [SEP] actually count as tokens themselves for
+        # BERT
+        return self._model.config.max_position_embeddings - 2
+
 
 class BasicEmbedder(Embedder):
     def __init__(
@@ -400,14 +444,14 @@ class BasicEmbedder(Embedder):
         num_embeddings: int,
         embedding_dim: int,
         padding_idx: int,
-        tokenizer: tokenizers.Tokenizer,
+        vocab: data.BasicVocab,
     ) -> None:
         """Wrapper around `nn.Embedding` that conforms to `Embedder`."""
-        super().__init__(tokenizer=tokenizer)
+        super().__init__(vocab=vocab)
         self._embedder = nn.Embedding(
             num_embeddings=num_embeddings,
             embedding_dim=embedding_dim,
-            padding_idx=padding_idx,
+            padding_idx=vocab.padding_tok_id,
         )
         self._embedding_dim = embedding_dim
         self._padding_idx = padding_idx
@@ -422,7 +466,7 @@ class BasicEmbedder(Embedder):
                   Where L is the length of the longest lstok_id in lslstok_id
         """
         padded_lslstok_id = utils.pad_lslsid(
-            lslstok_id, padding_tok_id=self._padding_idx
+            lslstok_id, padding_tok_id=self._vocab.padding_tok_id
         )
 
         token_ids = torch.tensor(padded_lslstok_id)
@@ -432,6 +476,11 @@ class BasicEmbedder(Embedder):
     @property
     def embedding_dim(self) -> int:
         return self._embedding_dim
+
+    @property
+    def max_seq_len(self) -> T.Optional[int]:
+        """Look at superclass doc."""
+        return None
 
 
 class PositionalEmbedder(Embedder):
@@ -494,6 +543,11 @@ class PositionalEmbedder(Embedder):
         embs.detach_()
         embs.requires_grad = False
         return embs  # type: ignore
+
+    @property
+    def max_seq_len(self) -> T.Optional[int]:
+        """Look at superclass doc."""
+        return None
 
 
 if __name__ == "__main__":

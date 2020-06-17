@@ -250,11 +250,6 @@ class Labels:
             lbl: id_ for id_, lbl in enumerate(self._id2lbl)
         }
 
-    @property
-    def _cached_attrs(self) -> T.List[str]:
-        """Look at superclass doc."""
-        return ["_id2lbl"]
-
     def get_lbl_id(self, lbl: str) -> int:
         """Get the id of a label."""
         return self._lbl2id[lbl]
@@ -269,12 +264,20 @@ class Labels:
     def batch_get_lbl(self, lslbl_id: T.List[int]) -> T.List[str]:
         return [self.get_lbl(lbl_id) for lbl_id in lslbl_id]
 
+    @property
+    def all_lbls(self) -> T.List[str]:
+        return self._id2lbl
+
 
 class Vocab(Cacheable, abc.ABC):
     """A class to encapsulate preprocessing of text, and mapping tokens to ids.
 
     Also contains a `Labels` object.
     """
+
+    def __init__(self, cache_dir: Path, ignore_cache: bool = False) -> None:
+        """Look at superclass doc."""
+        Cacheable.__init__(self, cache_dir, ignore_cache)
 
     def simplify_txt(self, txt: str) -> str:
         """Do things like lowercasing stripping out punctuation, ..etc."""
@@ -338,7 +341,7 @@ class Vocab(Cacheable, abc.ABC):
         pass
 
 
-class BasicVocab(Vocab, Cacheable):
+class BasicVocab(Vocab):
     """Vocab subclass that should work for most non-sub-word level tasks.
 
     Supports lowercasing, having a minimum count(unk tokens).
@@ -356,25 +359,28 @@ class BasicVocab(Vocab, Cacheable):
         """Set self._word2id after doing self.process() (via Cacheable.__init__()).
 
         Args:
-            tokenizer: Look at superclass doc.
+            txt_src: Used to build the vocabulary, as well as the list of labels.
+            tokenizer: Used to break txt_src examples into tokens and build vocab.
+            lower_case: Obvious.
             unk_thres: the minimum num of times a token has to appear to be included
                        in vocab.
+            cache_dir: Look at Cacheable.__init__
+            ignore_cache: Look at Cacheable.__init__
+
+        Sets:
+            self._word2id: T.Dict[str, int]
+            self._labels: Labels
         """
         self._lower_case = lower_case
         self._unk_thres = unk_thres
         self._txt_src = txt_src
         self._tokenizer = tokenizer
 
-        self._pad_id = 0
-        self._cls_id = 1
-        self._unk_id = 2
-
-        Cacheable.__init__(self, cache_dir=cache_dir, ignore_cache=ignore_cache)
+        super().__init__(cache_dir, ignore_cache)
 
         self._word2id: T.Dict[str, int] = {
             word: id_ for id_, word in enumerate(self._id2word)
         }
-        self._labels = Labels(self._id2lbl)
 
     def simplify_txt(self, txt: str) -> str:
         """Lower case if necessary."""
@@ -385,7 +391,7 @@ class BasicVocab(Vocab, Cacheable):
     @property
     def _cached_attrs(self) -> T.List[str]:
         """Look at superclass doc."""
-        return ["_id2word", "_id2lbl"]
+        return ["_id2word", "_labels"]
 
     @property
     def padding_tok_id(self) -> int:
@@ -419,13 +425,13 @@ class BasicVocab(Vocab, Cacheable):
     def get_toks(self, lsword_id: T.List[int]) -> T.List[str]:
         return [self._id2word[word_id] for word_id in lsword_id]
 
-    def tokenize_and_get_tok_ids(self, txt: str) -> T.List[int]:
-        return self.get_tok_ids(self.tokenizer.tokenize(txt))
-
     def process(self) -> None:
+        """Look at Cacheable.process.
 
-        # Compute word2id
-
+        Sets:
+            self._id2word: List[str]
+            self._labels: Labels
+        """
         word_counts: Counter[str] = Counter()
         lslbl: T.List[str] = []
 
@@ -440,32 +446,33 @@ class BasicVocab(Vocab, Cacheable):
             word for word, count in word_counts.items() if count >= self._unk_thres
         ]
         self._id2word = ["[PAD]", "[CLS]", "[UNK]"] + self._id2word
-        self._id2lbl = list(sorted(set(lslbl)))
-        self._lblcnt = Counter(lslbl)
-        logger.info(f"Made id2word of length {len(self._id2word)}")
-        logger.info(f"Made id2lbl of length {len(self._id2lbl)}")
 
+        id2lbl = list(sorted(set(lslbl)))
+        self._labels = Labels(id2lbl)
+        logger.info(f"Made id2word of length {len(self._id2word)}")
+        logger.info(f"Made id2lbl of length {len(self.labels.all_lbls)}")
+
+    @property
     def labels(self) -> Labels:
         return self._labels
 
 
 class BertVocab(Vocab):
-    """Wrapper around the tokenizer from the transformers library.
-
-    Inherits from `Vocab`.
-    """
+    """Wrapper around the tokenizer from the transformers library."""
 
     _model_name = "bert-base-uncased"
 
     def __init__(
         self,
+        txt_src: TextSource,
         tokenizer: tokenizers.bert.WrappedBertTokenizer,
         cache_dir: Path,
         ignore_cache: bool = False,
     ) -> None:
-        """Look at superclass doc."""
+        """Extract unique labels."""
         self._tokenizer = tokenizer
-        super().__init__(cache_dir=cache_dir, ignore_cache=ignore_cache)
+        self._txt_src = txt_src
+        super().__init__(cache_dir, ignore_cache)
 
         self._pad_id = 0
         self._cls_id = 1
@@ -478,17 +485,17 @@ class BertVocab(Vocab):
     @property
     def padding_tok_id(self) -> int:
         res = self._tokenizer.unwrapped_tokenizer.pad_token_id
-        return res  # type: ignore
+        return res
 
     @property
     def cls_tok_id(self) -> int:
         res = self._tokenizer.unwrapped_tokenizer.cls_token_id
-        return res  # type: ignore
+        return res
 
     @property
     def unk_tok_id(self) -> int:
         res = self._tokenizer.unwrapped_tokenizer.unk_token_id
-        return res  # type: ignore
+        return res
 
     def __repr__(self) -> str:
         return f"BertVocab-" f"model_name_{self._tokenizer.bert_model_name}"
@@ -498,19 +505,37 @@ class BertVocab(Vocab):
         return self._tokenizer
 
     def get_tok_ids(self, lsword: T.List[str]) -> T.List[int]:
-        lstok_id: T.List[
-            int
-        ] = self.tokenizer.unwrapped_tokenizer.convert_tokens_to_ids(lsword)
+        lstok_id = self.tokenizer.unwrapped_tokenizer.convert_tokens_to_ids(lsword)
         return lstok_id
 
     def get_toks(self, lsword_id: T.List[int]) -> T.List[str]:
-        lstok: T.List[str] = self.tokenizer.unwrapped_tokenizer._convert_token_to_id(
+        lstok: T.List[str] = self.tokenizer.unwrapped_tokenizer.convert_ids_to_tokens(
             lsword_id
         )
         return lstok
 
-    def tokenize_and_get_tok_ids(self, txt: str) -> T.List[int]:
-        return self.get_tok_ids(self.tokenizer.tokenize(txt))
+    @property
+    def _cached_attrs(self) -> T.List[str]:
+        """Look at Cacheable._cached_attrs."""
+        return ["_labels"]
+
+    def process(self) -> None:
+        """Look at Cacheable.process().
+
+        Sets:
+            self._labels
+        """
+        lslbl: T.List[str] = []
+        for _, lbl in self._txt_src:
+            lslbl.append(lbl)
+        id2lbl = list(sorted(set(lslbl)))
+        self._labels = Labels(id2lbl)
+
+        logger.info(f"Made id2lbl of length {len(self.labels.all_lbls)}")
+
+    @property
+    def labels(self) -> Labels:
+        return self._labels
 
 
 # Check here

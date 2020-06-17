@@ -41,3 +41,6 @@ class WrappedBertTokenizer(base.Tokenizer):
 
     def __repr__(self) -> str:
         return f"WrappedBertTokenizer-{self._bert_model_name}"
+
+
+__all__ = ["WrappedBertTokenizer"]
