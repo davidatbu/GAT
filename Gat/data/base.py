@@ -644,13 +644,13 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
 
             # For turning the sentence into a graph
             # Note that we are bypassing any vocab filtering(like replacing with UNK)
-            per_column_lsword = self.vocab.tokenizer.batch_tokenize(
-                self.vocab.batch_simplify_txt(list(per_column_lssent))
+            per_column_lsword = self._vocab.tokenizer.batch_tokenize(
+                self._vocab.batch_simplify_txt(list(per_column_lssent))
             )
-            per_column_sentgraph = self.sent2graph.batch_to_graph(per_column_lsword)
+            per_column_sentgraph = self._sent2graph.batch_to_graph(per_column_lsword)
 
             # But we do want the UNK tokens for nodeid2wordid
-            per_column_nodeid2wordid = self.vocab.batch_get_tok_ids(per_column_lsword)
+            per_column_nodeid2wordid = self._vocab.batch_get_tok_ids(per_column_lsword)
             per_column_sentgraph = [
                 SentGraph(
                     lsedge=lsedge,
@@ -677,9 +677,9 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
         lssent, lbl = sent_ex
         lssentgraph: T.List[SentGraph] = []
         for sent in lssent:
-            lsword = self.vocab.tokenizer.tokenize(self.vocab.simplify_txt(sent))
-            lsedge, lsedge_type, lsimp_node, _ = self.sent2graph.to_graph(lsword)
-            nodeid2wordid = self.vocab.tokenize_and_get_tok_ids(sent)
+            lsword = self._vocab.tokenizer.tokenize(self._vocab.simplify_txt(sent))
+            lsedge, lsedge_type, lsimp_node, _ = self._sent2graph.to_graph(lsword)
+            nodeid2wordid = self._vocab.tokenize_and_get_tok_ids(sent)
             sentgraph = SentGraph(
                 lsedge=lsedge,
                 lsedge_type=lsedge_type,
@@ -687,7 +687,7 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
                 nodeid2wordid=nodeid2wordid,
             )
             lssentgraph.append(sentgraph)
-        lbl_id = self.vocab.get_lbl_id(lbl)
+        lbl_id = self._vocab.labels.get_lbl_id(lbl)
         sentgraph_ex = SentgraphExample(lssentgraph=lssentgraph, lbl_id=lbl_id)
         return sentgraph_ex
 
@@ -707,8 +707,8 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
         lssent: T.List[str] = []
         for lsword_id in lslsword_id:
             assert lsword_id is not None
-            lssent.append(" ".join(self.vocab.get_toks(lsword_id)))
-        lbl = self.vocab.get_lbl(sent_graph_ex.lbl_id)
+            lssent.append(" ".join(self._vocab.get_toks(lsword_id)))
+        lbl = self._vocab.labels.get_lbl(sent_graph_ex.lbl_id)
 
         return SentExample(lssent=lssent, lbl=lbl)
 
@@ -728,12 +728,14 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
         # NetworkX format
         lsnode_word: T.List[T.Tuple[int, T.Dict[str, str]]] = [
             (node_id, {"label": quote(word)})
-            for node_id, word in enumerate(self.vocab.get_toks(sentgraph.nodeid2wordid))
+            for node_id, word in enumerate(
+                self._vocab.get_toks(sentgraph.nodeid2wordid)
+            )
         ]
 
         # Edges in nx format
         lsedge_role: T.List[T.Tuple[int, int, T.Dict[str, str]]] = [
-            (n1, n2, {"label": quote(self.sent2graph.id2edge_type[edge_id])})
+            (n1, n2, {"label": quote(self._sent2graph.id2edge_type[edge_id])})
             for (n1, n2), edge_id in zip(sentgraph.lsedge, sentgraph.lsedge_type)
         ]
         g.add_nodes_from(lsnode_word)
@@ -787,7 +789,7 @@ def load_splits(
     )
 
     cls_sent2graph = SENT2GRAPHS[sent2graph_name]
-    split_datasets: T.Dict[str, Dataset[SentgraphExample]] = {
+    split_datasets: T.Dict[str, SentenceGraphDataset] = {
         split: SentenceGraphDataset(
             cache_dir=dataset_dir,
             txt_src=txt_src,
@@ -803,7 +805,7 @@ def load_splits(
         logger.info(f"{split}")
         for i in range(min(len(dataset), 5)):
             lssentgraph, lbl_id = dataset[i]
-            logger.info(f"{vocab.get_lbl(lbl_id)}")
+            logger.info(f"{vocab.labels.get_lbl(lbl_id)}")
             for _, _, _, nodeid2wordid in lssentgraph:
                 assert nodeid2wordid is not None
                 logger.info(f"\t{vocab.get_toks(nodeid2wordid)}")
