@@ -16,7 +16,6 @@ from transformers import BertModel
 
 from Gat import data
 from Gat import utils
-from Gat.data import tokenizers
 
 
 logger = logging.getLogger("__main__")

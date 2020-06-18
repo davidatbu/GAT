@@ -312,7 +312,7 @@ class Vocab(Cacheable, abc.ABC):
 
     def tokenize_and_get_tok_ids(self, txt: str) -> T.List[int]:
         """Convinience function to call tokenize and get tok ids in one."""
-        return self.get_tok_ids(self.tokenizer.tokenize(txt))
+        return self.get_tok_ids(self.tokenizer.tokenize(self.simplify_txt(txt)))
 
     def batch_tokenize_and_get_tok_ids(self, lstxt: T.List[str]) -> T.List[T.List[int]]:
         """Batch version."""
