@@ -40,17 +40,14 @@ class VocabSetup(T.NamedTuple):
 @pytest.fixture(scope="session")
 def vocab_setup(temp_dir: Path) -> VocabSetup:
     txt_src = data.FromIterableTextSource(
-        [
-            (["guard your heart"], "yes"),
-            (["eat from the tree of the knowledge of good and evil"], "no"),
-        ]
+        [(["guard your heart"], "yes"), (["pacification"], "no")]
     )
 
     basic_vocab = data.BasicVocab(
         txt_src=txt_src,
         tokenizer=data.tokenizers.spacy.WrappedSpacyTokenizer(),
         cache_dir=temp_dir,
-        unk_thres=2,
+        unk_thres=1,
     )
 
     bert_vocab = data.BertVocab(
@@ -71,4 +68,14 @@ def vocab_setup(temp_dir: Path) -> VocabSetup:
 @pytest.fixture(scope="session")
 def bert_embedder(vocab_setup: VocabSetup) -> layers.BertEmbedder:
     embedder = layers.BertEmbedder(vocab=vocab_setup.bert_vocab, last_how_many_layers=4)
+    return embedder
+
+
+@pytest.fixture(scope="session")
+def reconciler_embedder(
+    vocab_setup: VocabSetup, bert_embedder: layers.BertEmbedder
+) -> layers.ReconcilingEmbedder:
+    embedder = layers.ReconcilingEmbedder(
+        vocab_setup.bert_vocab, vocab_setup.basic_vocab, bert_embedder
+    )
     return embedder

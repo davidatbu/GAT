@@ -751,6 +751,17 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
         return list(X), list(y)
 
 
+class GraphCollateFunction:
+    """A configurable collate_fn for pytorch's dataloaders.
+
+    Features:
+        1. Make edges undirected.
+        2. Add directed edges in the other direction of the directed edges present.
+    """
+
+    pass
+
+
 SENT2GRAPHS: T.Dict[str, T.Type[SentenceToGraph]] = {
     "srl": SRLSentenceToGraph,
     "dep": DepSentenceToGraph,

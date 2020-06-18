@@ -205,3 +205,34 @@ def test_bert(vocab_setup: VocabSetup, bert_embedder: layers.BertEmbedder) -> No
 
     max_seq_len = max(map(len, lslstok_id))
     assert our_embs.size("L") == max_seq_len
+
+
+def test_reconciler_embedder(
+    reconciler_embedder: layers.ReconcilingEmbedder,
+    vocab_setup: VocabSetup,
+    bert_embedder: layers.BertEmbedder,
+) -> None:
+    lstxt = ["guard your heart"]
+    lslstok_id = vocab_setup.basic_vocab.batch_tokenize_and_get_tok_ids(lstxt)
+
+    from_rec = reconciler_embedder.forward(lslstok_id)
+    without_rec = bert_embedder.forward(
+        vocab_setup.bert_vocab.batch_tokenize_and_get_tok_ids(lstxt)
+    )
+    torch.testing.assert_allclose(  # type: ignore
+        without_rec.rename(None), from_rec.rename(None)
+    )
+
+    lstxt = ["pacification"]
+    lslstok_id = vocab_setup.basic_vocab.batch_tokenize_and_get_tok_ids(lstxt)
+
+    from_rec = reconciler_embedder.forward(lslstok_id)
+    without_rec = bert_embedder.forward(
+        vocab_setup.bert_vocab.batch_tokenize_and_get_tok_ids(lstxt)
+    )
+    without_rec_pooled = without_rec.mean(dim="L").align_to(  # type: ignore
+        "B", "L", "E"
+    )
+    torch.testing.assert_allclose(  # type: ignore
+        without_rec_pooled.rename(None), from_rec.rename(None)
+    )
