@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import typing_extensions as TT
 from torch import nn
+from torch import Tensor
 from transformers import AutoConfig
 from transformers import AutoModel
 from transformers import BertModel
@@ -740,6 +741,70 @@ class PositionalEmbedder(Embedder):
     def max_seq_len(self) -> T.Optional[int]:
         """Look at superclass doc."""
         return None
+
+
+class GATLayered(nn.Module):  # type: ignore
+    def __init__(
+        self,
+        node_features_init: torch.Tensor,
+        edge_features_init: torch.Tensor,
+        node_embedder: Embedder,
+        positional_node_embedder: Embedder,
+        edge_embedder: Embedder,
+    ):
+        """It's like the transformer.
+
+        Layers of GraphMultiHeadAttention and FeedForward, each wrapped by a rezero
+        connection (or a residual and a layer norm).
+        """
+        super().__init__()
+
+        self.node_embedder = layers.Embedder()  # type: ignore # TODO
+        self.key_edge_embedder = layers.Embedder()  # type: ignore # TODO
+        self.positional_embedder = layers.PositionalEmbedder(
+            embedding_dim=config.embed_dim
+        )
+        self.lsmultihead_att_wrapper = nn.ModuleList(
+            [
+                layers.GraphMultiHeadAttentionWrapped(
+                    embed_dim=config.embed_dim,
+                    num_heads=config.num_heads,
+                    include_edge_features=config.include_edge_features,
+                    edge_dropout_p=config.edge_dropout_p,
+                    rezero_or_residual=config.rezero_or_residual,
+                )
+                for _ in range(config.nmid_layers)
+            ]
+        )
+        self.lsfeed_forward_wrapper = nn.ModuleList(
+            [
+                layers.FeedForwardWrapped(
+                    in_out_dim=config.embed_dim,
+                    intermediate_dim=config.intermediate_dim,
+                    rezero_or_residual=config.rezero_or_residual,
+                    feat_dropout_p=config.feat_dropout_p,
+                )
+                for _ in range(config.nmid_layers)
+            ]
+        )
+
+    def forward(self, word_ids: Tensor, adj: Tensor, edge_types: Tensor) -> Tensor:
+        node_features = self.token_embedder(word_ids)
+        node_features = node_features + self.positional_embedder(word_ids)
+        key_edge_features = self.key_edge_embedder(edge_types)
+
+        for multihead_att_wrapper, feed_forward_wrapper in zip(
+            self.lsmultihead_att_wrapper, self.lsfeed_forward_wrapper
+        ):
+            node_features = multihead_att_wrapper(
+                node_features=node_features,
+                adj=adj,
+                key_edge_features=key_edge_features,
+            )
+
+            node_features = feed_forward_wrapper(node_features=node_features)
+
+        return node_features
 
 
 if __name__ == "__main__":
