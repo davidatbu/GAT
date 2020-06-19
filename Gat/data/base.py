@@ -17,11 +17,12 @@ from typing_extensions import Counter
 from ..sent2graph.base import SentenceToGraph
 from ..sent2graph.dep import DepSentenceToGraph
 from ..sent2graph.srl import SRLSentenceToGraph
-from ..utils.base import grouper
-from ..utils.base import SentExample
-from ..utils.base import SentGraph
-from ..utils.base import SentgraphExample
+from ..utils import grouper
+from ..utils import SentExample
+from ..utils import SentGraph
+from ..utils import SentgraphExample
 from Gat.data import tokenizers
+from Gat.neural import layers
 
 
 logger = logging.getLogger("__main__")
@@ -340,6 +341,30 @@ class Vocab(Cacheable, abc.ABC):
     def labels(self) -> Labels:
         pass
 
+    @abc.abstractmethod
+    def prepare_for_embedder(
+        self,
+        lslstok_id: T.List[T.List[int]],
+        embedder: layers.Embedder,
+        device: torch.device = torch.device("cpu"),
+    ) -> torch.LongTensor:
+        pass
+
+    def strip_after_embedder(self, embs: torch.Tensor) -> torch.Tensor:
+        """Strip special tokens after passing through embedder.
+
+        Currently, we use this only to remove the [CLS] token from BERT. (We don't even
+        remove the [SEP] token with it).
+
+        Args:
+            embs: (B, L, E)
+
+        Returns:
+            embs: (B, L, E)
+        """
+        assert embs.names == ("B", "L", "E")  # type: ignore
+        return embs
+
 
 class BasicVocab(Vocab):
     """Vocab subclass that should work for most non-sub-word level tasks.
@@ -456,6 +481,39 @@ class BasicVocab(Vocab):
     def labels(self) -> Labels:
         return self._labels
 
+    def prepare_for_embedder(
+        self,
+        lslstok_id: T.List[T.List[int]],
+        embedder: layers.Embedder,
+        device: torch.device = torch.device("cpu"),
+    ) -> torch.LongTensor:
+        """Pad/truncate tokens, convert them to torch tensors and move them to device.
+
+        The padding token is `self.padding_tok_id`. The length of the sequence after
+        padding/truncating will be equal to the longest sequence in `lslstok_id` if
+        `seq_len` is `None`.
+
+        Args:
+            lslstok_id:
+            embedder:
+            device:
+
+        Returns:
+            tok_ids: (B, L, E)
+        """
+        seq_len = max(map(len, lslstok_id))
+        if embedder.max_seq_len is not None and embedder.max_seq_len > seq_len:
+            seq_len = embedder.max_seq_len
+
+        padded_lslstok_id = [
+            lstok_id[:seq_len] + [self.padding_tok_id] * max(0, seq_len - len(lstok_id))
+            for lstok_id in lslstok_id
+        ]
+        tok_ids: torch.LongTensor = torch.tensor(  # type: ignore
+            padded_lslstok_id, dtype=torch.long, device=device,
+        )
+        return tok_ids.rename("B", "L")  # type: ignore
+
 
 class BertVocab(Vocab):
     """Wrapper around the tokenizer from the transformers library."""
@@ -490,6 +548,11 @@ class BertVocab(Vocab):
     @property
     def cls_tok_id(self) -> int:
         res = self._tokenizer.unwrapped_tokenizer.cls_token_id
+        return res
+
+    @property
+    def sep_tok_id(self) -> int:
+        res = self._tokenizer.unwrapped_tokenizer.sep_token_id
         return res
 
     @property
@@ -536,6 +599,54 @@ class BertVocab(Vocab):
     @property
     def labels(self) -> Labels:
         return self._labels
+
+    def prepare_for_embedder(
+        self,
+        lslstok_id: T.List[T.List[int]],
+        embedder: layers.Embedder,
+        device: torch.device = torch.device("cpu"),
+    ) -> torch.LongTensor:
+        """Pad/truncate tokens, convert them to torch tensors and move them to device.
+
+        This adds [CLS], [SEP], and obviously [PAD] in the correct spots.
+        The length of the sequence after padding/truncating will be equal to the longest
+        sequence in `lslstok_id`, or embedder.max_seq_len, whichever is smaller.
+
+        Args:
+            lslstok_id:
+            embedder:
+            device:
+
+        Returns:
+            tok_ids: (B, L, E)
+        """
+        num_special_tokens = 2  # CLS and SEP
+        non_special_tok_seq_len = max(map(len, lslstok_id))
+
+        if (
+            embedder.max_seq_len is not None
+            and non_special_tok_seq_len > embedder.max_seq_len - num_special_tokens
+        ):
+            non_special_tok_seq_len = embedder.max_seq_len - num_special_tokens
+
+        padded_lslstok_id = [
+            [self.cls_tok_id]
+            + lstok_id[:non_special_tok_seq_len]
+            + [self.sep_tok_id]
+            + [self.padding_tok_id] * max(0, non_special_tok_seq_len - len(lstok_id))
+            for lstok_id in lslstok_id
+        ]
+        tok_ids: torch.LongTensor = torch.tensor(  # type: ignore
+            padded_lslstok_id, dtype=torch.long, device=device,
+        )
+
+        print(tok_ids.size())
+        return tok_ids.rename("B", "L")  # type: ignore
+
+    def strip_after_embedder(self, embs: torch.Tensor) -> torch.Tensor:
+        """Look at superclass doc."""
+        assert embs.names == ("B", "L", "E")  # type: ignore
+        return embs[:, 1:]
 
 
 # Check here

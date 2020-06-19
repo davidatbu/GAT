@@ -16,7 +16,7 @@ from transformers import AutoModel
 from transformers import BertModel
 
 from Gat import data
-from Gat import utils
+
 
 logger = logging.getLogger("__main__")
 
@@ -24,13 +24,9 @@ logger = logging.getLogger("__main__")
 # Look at
 # https://mypy.readthedocs.io/en/stable/common_issues.html#using-classes-that-are-generic-in-stubs-but-not-at-runtime
 # for why this is necessary.
-if T.TYPE_CHECKING:
-    nnModule = nn.Module[torch.Tensor]
-else:
-    nnModule = nn.Module
 
 
-class GraphMultiHeadAttention(nnModule):
+class GraphMultiHeadAttention(nn.Module):  # type: ignore
     def __init__(
         self,
         embed_dim: int,
@@ -70,11 +66,11 @@ class GraphMultiHeadAttention(nnModule):
 
     def forward(
         self,
-        node_features: torch.FloatTensor,
-        adj: torch.BoolTensor,
-        key_edge_features: T.Optional[torch.FloatTensor] = None,
-        value_edge_features: T.Optional[torch.FloatTensor] = None,
-    ) -> torch.FloatTensor:
+        node_features: torch.Tensor,
+        adj: torch.Tensor,
+        key_edge_features: T.Optional[torch.Tensor] = None,
+        value_edge_features: T.Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """.
 
         Args:
@@ -179,7 +175,22 @@ class GraphMultiHeadAttention(nnModule):
         # Pass them through W_o finally
         new_node_features = self.W_out(new_node_features).refine_names(..., "E")  # type: ignore # noqa:
 
-        return new_node_features  # type: ignore
+        return new_node_features
+
+    def __call__(
+        self,
+        node_features: torch.Tensor,
+        adj: torch.Tensor,
+        key_edge_features: T.Optional[torch.Tensor] = None,
+        value_edge_features: T.Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Only here to help mypy with typechecking. Can be removed without harm."""
+        return super().__call__(  # type: ignore
+            node_features=node_features,
+            adj=adj,
+            key_edge_features=key_edge_features,
+            value_edge_features=value_edge_features,
+        )
 
     def _transpose_for_scores(self, W: torch.FloatTensor) -> torch.FloatTensor:
         W = W.unflatten(  # type: ignore
@@ -190,7 +201,7 @@ class GraphMultiHeadAttention(nnModule):
         return W.transpose("N", "num_heads")  # type: ignore
 
 
-class Rezero(nnModule):
+class Rezero(nn.Module):  # type: ignore
     def __init__(self, layer: nn.Module[torch.Tensor]):
         """Wrap a `layer` with a rezero conneciton."""
         super().__init__()
@@ -201,8 +212,12 @@ class Rezero(nnModule):
         after_rezero = h + self.rezero_weight * self.layer(h, **kwargs)
         return after_rezero
 
+    def __call__(self, h: torch.Tensor, **kwargs: T.Any) -> torch.Tensor:
+        """Only here to help mypy with typechecking. Can be removed without harm."""
+        return super().__call__(h=h, **kwargs)  # type: ignore
 
-class ResidualAndNorm(nnModule):
+
+class ResidualAndNorm(nn.Module):  # type: ignore
     def __init__(self, dim: int, layer: nn.Module[torch.Tensor]):
         """Wrap a `layer` with a residual conneciton and layer normalization."""
         super().__init__()
@@ -214,8 +229,12 @@ class ResidualAndNorm(nnModule):
         after_layer_norm = self.layer_norm(after_residual)
         return after_layer_norm
 
+    def __call__(self, h: torch.Tensor, **kwargs: T.Any) -> torch.Tensor:
+        """Only here to help mypy with typechecking. Can be removed without harm."""
+        return super().__call__(h=h, **kwargs)  # type: ignore
 
-class FeedForward(nnModule):
+
+class FeedForward(nn.Module):  # type: ignore
     def __init__(
         self,
         in_out_dim: int,
@@ -238,8 +257,12 @@ class FeedForward(nnModule):
         after_ff = self.W2(self.dropout(self.relu(self.W1(after_dropout))))
         return after_ff
 
+    def __call__(self, h: torch.Tensor, **kwargs: T.Any) -> torch.Tensor:
+        """Only here to help mypy with typechecking. Can be removed without harm."""
+        return super().__call__(h=h, **kwargs)  # type: ignore
 
-class GraphMultiHeadAttentionWrapped(nnModule):
+
+class GraphMultiHeadAttentionWrapped(nn.Module):  # type: ignore
     def __init__(
         self,
         embed_dim: int,
@@ -280,8 +303,23 @@ class GraphMultiHeadAttentionWrapped(nnModule):
             value_edge_features=value_edge_features,
         )
 
+    def __call__(
+        self,
+        node_features: torch.Tensor,
+        adj: torch.Tensor,
+        key_edge_features: T.Optional[torch.Tensor] = None,
+        value_edge_features: T.Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Only here to help mypy with typechecking. Can be removed without harm."""
+        return super().__call__(  # type: ignore
+            node_features=node_features,
+            adj=adj,
+            key_edge_features=key_edge_features,
+            value_edge_features=value_edge_features,
+        )
 
-class FeedForwardWrapped(nnModule):
+
+class FeedForwardWrapped(nn.Module):  # type: ignore
     def __init__(
         self,
         in_out_dim: int,
@@ -313,15 +351,13 @@ class FeedForwardWrapped(nnModule):
     def forward(self, node_features: torch.Tensor) -> torch.Tensor:
         return self.wrapper(node_features)
 
+    def __call__(self, node_features: torch.Tensor) -> torch.Tensor:
+        """Only here to help mypy with typechecking. Can be removed without harm."""
+        return super().__call__(node_features=node_features)  # type: ignore
 
-class Embedder(nnModule, abc.ABC):
-    """An abstract class.
 
-    The intended behavior for all subclassers is that their `forward()` accepts a
-    T.List[T.List[str]], pads each T.List[str] to the maximum T.List[str] present (or
-    the maximum that the underlying embedding source supports, ie BERT) and then outputs
-    a torch.Tensor.
-    """
+class Embedder(nn.Module, abc.ABC):  # type: ignore
+    """An abstract class."""
 
     def __init__(self, vocab: T.Optional[data.Vocab] = None) -> None:
         """An abstract embedder to specify input and output. # noqa: 
@@ -334,15 +370,19 @@ class Embedder(nnModule, abc.ABC):
             self._vocab = vocab
 
     @abc.abstractmethod
-    def forward(self, lsls_tok_id: T.List[T.List[int]]) -> torch.Tensor:
+    def forward(self, tok_ids: torch.LongTensor) -> torch.Tensor:
         """.
 
         Args:
-            token_ids:
+            tok_ids: (B, L)
         Returns:
             embs: (B, L, E)
         """
         pass
+
+    def __call__(self, tok_ids: torch.LongTensor) -> torch.Tensor:
+        """Only here to help mypy with typechecking. Can be removed without harm."""
+        return super().__call__(tok_ids)  # type: ignore
 
     @abc.abstractproperty
     def embedding_dim(self) -> int:
@@ -357,10 +397,10 @@ class Embedder(nnModule, abc.ABC):
 class BertEmbedder(Embedder):
     _model_name: T.Literal["bert-base-uncased"] = "bert-base-uncased"
 
-    def __init__(self, vocab: data.BertVocab, last_how_many_layers: int = 4,) -> None:
+    def __init__(self, vocab: data.BertVocab) -> None:
         """Initialize bert model and so on."""
         super().__init__(vocab=vocab)
-        self._embedding_dim = 768 * last_how_many_layers
+        self._embedding_dim = 768
 
         # Setup transformers BERT
         config = AutoConfig.from_pretrained(
@@ -372,48 +412,30 @@ class BertEmbedder(Embedder):
 
         self._vocab: data.BertVocab
 
-    def forward(self, lslstok_id: T.List[T.List[int]]) -> torch.Tensor:
+    def forward(self, tok_ids: torch.LongTensor) -> torch.Tensor:
         """Get the BERT token embeddings.
 
-        This does not return embeddings for the [CLS] token, or the [SEP] token.
-        lslstok_id should not contain the [CLS] token, or the [SEP] token, either.
+        Assumes that tok_ids already is "well-prepared", ie, has the [CLS] and [PAD] and
+        [SEP] tokens in all the right places.
 
         Args:
-            token_ids:
+            tok_ids: (B, L)
         Returns:
             embs: (B, L, E)
-                B = len(token_ids)
+                B = len(tok_ids)
                 L = self._model.config.max_position_embeddings
                 And E is the num of dimensions the BERT vectors
         """
-        cls_tok_id = self._vocab.tokenizer.unwrapped_tokenizer.cls_token_id
-        sep_tok_id = self._vocab.tokenizer.unwrapped_tokenizer.sep_token_id
+        assert tok_ids.names == ("B", "L")  # type: ignore
+        if tok_ids.size("L") > self.max_seq_len:
+            raise Exception(f"BertEmbedder supports input with L<={self.max_seq_len}")
 
-        unpadded_with_special_toks_lslstok_id = [
-            [cls_tok_id] + lstok_id + [sep_tok_id] for lstok_id in lslstok_id
-        ]
-
-        padded_lslstok_id = utils.pad_lslsid(
-            unpadded_with_special_toks_lslstok_id,
-            padding_tok_id=self._vocab.padding_tok_id,
-            max_len=self._model.config.max_position_embeddings,
-        )
-        input_ids = torch.tensor(
-            padded_lslstok_id,
-            dtype=torch.long,
-            device=next(self._model.parameters()).device,
-        )
-        outputs = self._model(input_ids)
+        outputs = self._model(tok_ids.rename(None))
 
         last_hidden_outputs = outputs[0]
         last_hidden_outputs = last_hidden_outputs.refine_names(
             "B", "L", "E"  # type: ignore
         )
-
-        # Remove [CLS] and [SEP] embeddings, truncate to max sequence length
-        max_length = min(self.max_seq_len, max(map(len, lslstok_id)))
-        assert max_length is not None
-        last_hidden_outputs = last_hidden_outputs[:, 1 : max_length + 1, :]
 
         return last_hidden_outputs
 
@@ -430,11 +452,9 @@ class BertEmbedder(Embedder):
             )
 
     @property
-    def max_seq_len(self) -> T.Optional[int]:
+    def max_seq_len(self) -> int:
         """Look at superclass doc."""
-        # The -2 here is because [CLS] and [SEP] actually count as tokens themselves for
-        # BERT
-        return self._model.config.max_position_embeddings - 2
+        return self._model.config.max_position_embeddings
 
 
 class BasicEmbedder(Embedder):
@@ -455,21 +475,20 @@ class BasicEmbedder(Embedder):
         self._embedding_dim = embedding_dim
         self._padding_idx = padding_idx
 
-    def forward(self, lslstok_id: T.List[T.List[int]]) -> torch.Tensor:
+    def forward(self, tok_ids: torch.LongTensor) -> torch.Tensor:
         """.
 
+        This doesn't check if tok_ids is less than 512 long along the L dimension,
+        which is necessary for BERT.
+
         Args:
-            token_ids:
+            tok_ids: (B, L)
+
         Returns:
             embs: (B, L, E)
-                  Where L is the length of the longest lstok_id in lslstok_id
         """
-        padded_lslstok_id = utils.pad_lslsid(
-            lslstok_id, padding_tok_id=self._vocab.padding_tok_id
-        )
-
-        token_ids = torch.tensor(padded_lslstok_id)
-        res = self._embedder(token_ids)
+        assert tok_ids.names == ("B", "L")  # type: ignore
+        res = self._embedder(tok_ids.rename(None)).rename("B", "L", "E")  # type: ignore
         return res
 
     @property
@@ -503,11 +522,23 @@ class ReconcilingEmbedder(Embedder):
         self._word_vocab = word_vocab
         self._sub_word_embedder = sub_word_embedder
 
-    def forward(self, lslsword_id: T.List[T.List[int]]) -> torch.Tensor:
-        """Tokenize using the two tokenizers, pool over subwords to create word embedding.
+        # Get the padding vector once, because we'll need it again and again
+        prepared_pad_tok_id = sub_word_vocab.prepare_for_embedder(
+            [[sub_word_vocab.padding_tok_id]], sub_word_embedder
+        )
+        with_special_toks = self._sub_word_embedder(prepared_pad_tok_id)
+        without_special_toks = self._sub_word_vocab.strip_after_embedder(
+            with_special_toks
+        )
+
+        no_padding_toks = without_special_toks[:, :1]
+        self._padding_vec = no_padding_toks.squeeze()
+
+    def forward(self, word_ids: torch.Tensor) -> torch.Tensor:
+        """Pool over subwords to create word embedding.
 
         Args:
-            lstxt: A list of sentences.
+            word_ids: (B, L)
         Returns:
             embedding: (B, L, E)
                        B = len(lstxt)
@@ -529,13 +560,32 @@ class ReconcilingEmbedder(Embedder):
                        L == 1 # True, since "embeddings" doesn't fit within 2 sub word
                               # tokens
         """
-        lswords = self._word_vocab.batch_get_toks(lslsword_id)
-        lssubwordids_per_word = [
-            [self._sub_word_vocab.tokenize_and_get_tok_ids(word) for word in words]
-            for words in lswords
-        ]
+        lslswordid: T.List[T.List[int]] = word_ids.cpu().numpy().tolist()
+        lslsword = self._word_vocab.batch_get_toks(lslswordid)
+        lssubwordids_per_word: T.List[T.List[T.List[int]]] = []
+
+        for seq_num in range(len(lslswordid)):
+
+            lsword = lslsword[seq_num]
+            lswordid = lslswordid[seq_num]
+
+            subwordids_per_word: T.List[T.List[int]] = []
+
+            for word_num in range(len(lswordid)):
+                word = lsword[word_num]
+                wordid = lswordid[word_num]
+
+                if wordid == self._word_vocab.padding_tok_id:  # End of sequence
+                    break
+
+                subwordids_for_one_word = self._sub_word_vocab.tokenize_and_get_tok_ids(
+                    word
+                )
+                subwordids_per_word.append(subwordids_for_one_word)
+            lssubwordids_per_word.append(subwordids_per_word)
+
         # "Flat" sub word tokenization for each sequence
-        lssubwordids: T.List[T.List[int]] = []
+        lslssubwordid: T.List[T.List[int]] = []
         # The number of sub words in each word
         lssubword_counts: T.List[T.List[int]] = []
 
@@ -544,18 +594,27 @@ class ReconcilingEmbedder(Embedder):
             max_subword_seq_len = float(self._sub_word_embedder.max_seq_len)
         for subwordids_per_word in lssubwordids_per_word:
             # "Flatten" to one list
-            subwordids: T.List[int] = []
+            lssubwordid: T.List[int] = []
             subword_counts: T.List[int] = []
             for subwordids_for_one_word in subwordids_per_word:
                 # Check if subword tokenization exceeds the limit
-                if len(subwordids) > max_subword_seq_len:
+                if len(lssubwordid) > max_subword_seq_len:
                     break
-                subwordids.extend(subwordids_for_one_word)
+                lssubwordid.extend(subwordids_for_one_word)
                 subword_counts.append(len(subwordids_for_one_word))
             lssubword_counts.append(subword_counts)
-            lssubwordids.append(subwordids)
+            lslssubwordid.append(lssubwordid)
 
-        subword_embs = self._sub_word_embedder(lssubwordids)
+        prepared_subwordids = self._sub_word_vocab.prepare_for_embedder(
+            lslssubwordid,
+            embedder=self._sub_word_embedder,
+            device=next(self.parameters()).device,
+        )
+
+        with_special_tok_subword_embs = self._sub_word_embedder(prepared_subwordids)
+        subword_embs = self._sub_word_vocab.strip_after_embedder(
+            with_special_tok_subword_embs
+        )
 
         pooled_word_embs = self.pool_sequences(subword_embs, lssubword_counts)
         return pooled_word_embs
@@ -583,10 +642,6 @@ class ReconcilingEmbedder(Embedder):
         # Figure out the longest word seq length
         max_word_seq_len = max(map(len, lssubword_counts))
 
-        # Get the padding vector
-        padding_vec = self._sub_word_embedder([[self._sub_word_vocab.padding_tok_id]])
-        padding_vec = padding_vec.squeeze()
-
         # Word embeddings per seq
         lsword_seq: T.List[torch.Tensor] = []
 
@@ -601,7 +656,7 @@ class ReconcilingEmbedder(Embedder):
                     subword_seq[beg:end].mean(dim=0).rename(None)
                     for beg, end in zip(beg_iterator, end_iterator)
                 ]
-                + [padding_vec] * (max_word_seq_len - word_seq_len)
+                + [self._padding_vec] * (max_word_seq_len - word_seq_len)
             )
 
             # TODO: Remove
@@ -637,21 +692,21 @@ class PositionalEmbedder(Embedder):
     def embedding_dim(self) -> int:
         return self._embedding_dim
 
-    def forward(self, lslstok_id: T.List[T.List[int]]) -> torch.Tensor:
+    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         """Only needs the length information from lslstok_id.
 
         Args:
-            token_ids:
+            token_ids: (B, L)
         Returns:
             positional_embs: (B, L, E)
                 Where L is the size of the longest lstok_id in lslstok_id
         """
-        cur_max = max(map(len, lslstok_id))
+        cur_max = token_ids.size("L")
         if cur_max > self.embs.size("L"):
             logger.info(f"Increasing max position embedding to {cur_max}")
             self.register_buffer("embs", self._create_embs(cur_max))
 
-        batch_size = len(lslstok_id)
+        batch_size = token_ids.size("B")
         return self.embs[:, :cur_max].expand(batch_size, -1, -1)
 
     def _create_embs(self, max_length: int) -> torch.Tensor:

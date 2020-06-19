@@ -16,20 +16,12 @@ from tqdm import tqdm  # type: ignore
 
 from Gat.config import base as config
 from Gat.neural import layers
-from tests.conftest import VocabSetup
+from Gat.utils import Device
 
 
 @pytest.fixture(scope="session")
 def temp_dir() -> Path:
     return Path(tempfile.mkdtemp(prefix="GAT_test"))
-
-
-@pytest.fixture(scope="session")
-def use_cuda() -> bool:
-    # This was stolen from private torch code
-    if not hasattr(torch._C, "_cuda_isDriverSufficient"):
-        return False
-    return torch.cuda.is_available()
 
 
 class _GatSetup(T.NamedTuple):
@@ -41,11 +33,7 @@ class _GatSetup(T.NamedTuple):
 
 
 @pytest.fixture
-def gat_setup(use_cuda: bool) -> _GatSetup:
-    if use_cuda:
-        device = "cuda"
-    else:
-        device = "cpu"
+def gat_setup(device: Device) -> _GatSetup:
 
     gat_config = config.GATConfig(
         embed_dim=768,
@@ -106,19 +94,14 @@ def gat_setup(use_cuda: bool) -> _GatSetup:
     )
 
 
-def test_best_num_heads(gat_setup: _GatSetup, use_cuda: bool) -> None:
+def test_best_num_heads(gat_setup: _GatSetup, device: Device) -> None:
 
-    if not use_cuda:
+    if not device != "cuda":
         print("test skipped. no cuda.")
         return
 
     crs_entrpy = nn.CrossEntropyLoss()
     n_steps = 5000
-
-    if use_cuda:
-        device = "cuda"
-    else:
-        device = "cpu"
 
     steps_to_converge_for_num_heads: T.Dict[int, int] = {}
     for num_heads in (2, 4, 12, 64, 384):
@@ -140,8 +123,7 @@ def test_best_num_heads(gat_setup: _GatSetup, use_cuda: bool) -> None:
             include_edge_features=True,
             edge_dropout_p=0.3,
         )
-        if use_cuda:
-            multihead_att.cuda()
+        multihead_att.cuda()
         adam = torch.optim.Adam(
             # Include key_edge_features in features to be optimized
             [key_edge_features]
@@ -173,66 +155,4 @@ def test_best_num_heads(gat_setup: _GatSetup, use_cuda: bool) -> None:
             f"num_heads: {num_heads}, step: {steps}"
             for num_heads, steps in steps_to_converge_for_num_heads.items()
         )
-    )
-
-
-def test_basic_embedder(vocab_setup: VocabSetup) -> None:
-    basic_embedder = layers.BasicEmbedder(
-        vocab=vocab_setup.basic_vocab,
-        num_embeddings=3,
-        embedding_dim=768,
-        padding_idx=vocab_setup.basic_vocab.padding_tok_id,
-    )
-    embs = basic_embedder.forward(vocab_setup.lslstok_id)
-    assert embs[0, 1].sum().item() == 0.0
-    embs_size = tuple(embs.size())
-    assert embs_size == (2, 2, basic_embedder.embedding_dim)
-
-
-def test_pos_embedder(vocab_setup: VocabSetup) -> None:
-    pos_embedder = layers.PositionalEmbedder(embedding_dim=768)
-    embs = pos_embedder.forward(vocab_setup.lslstok_id)
-    embs_size = tuple(embs.size())
-    assert embs_size == (2, 2, pos_embedder.embedding_dim)
-
-
-def test_bert(vocab_setup: VocabSetup, bert_embedder: layers.BertEmbedder) -> None:
-
-    lssent = ["pacification", "something"]
-    lslstok_id = vocab_setup.bert_vocab.batch_tokenize_and_get_tok_ids(lssent)
-
-    our_embs = bert_embedder.forward(lslstok_id)
-
-    max_seq_len = max(map(len, lslstok_id))
-    assert our_embs.size("L") == max_seq_len
-
-
-def test_reconciler_embedder(
-    reconciler_embedder: layers.ReconcilingEmbedder,
-    vocab_setup: VocabSetup,
-    bert_embedder: layers.BertEmbedder,
-) -> None:
-    lstxt = ["guard your heart"]
-    lslstok_id = vocab_setup.basic_vocab.batch_tokenize_and_get_tok_ids(lstxt)
-
-    from_rec = reconciler_embedder.forward(lslstok_id)
-    without_rec = bert_embedder.forward(
-        vocab_setup.bert_vocab.batch_tokenize_and_get_tok_ids(lstxt)
-    )
-    torch.testing.assert_allclose(  # type: ignore
-        without_rec.rename(None), from_rec.rename(None)
-    )
-
-    lstxt = ["pacification"]
-    lslstok_id = vocab_setup.basic_vocab.batch_tokenize_and_get_tok_ids(lstxt)
-
-    from_rec = reconciler_embedder.forward(lslstok_id)
-    without_rec = bert_embedder.forward(
-        vocab_setup.bert_vocab.batch_tokenize_and_get_tok_ids(lstxt)
-    )
-    without_rec_pooled = without_rec.mean(dim="L").align_to(  # type: ignore
-        "B", "L", "E"
-    )
-    torch.testing.assert_allclose(  # type: ignore
-        without_rec_pooled.rename(None), from_rec.rename(None)
     )

@@ -1,3 +1,4 @@
+"""Some datastructures, some convinience functions, can probably be broken up."""
 import base64
 import typing as T
 
@@ -13,6 +14,8 @@ NodeList = T.List[Node]
 EdgeType = int
 EdgeTypeList = T.List[EdgeType]
 Slice = T.Tuple[int, int]
+# A type for PyTorch device indication
+Device = T.Literal["cuda", "cpu"]
 
 
 class SentGraph(T.NamedTuple):
@@ -22,7 +25,7 @@ class SentGraph(T.NamedTuple):
     nodeid2wordid: T.Optional[T.List[int]]
 
     def __hash__(self) -> int:
-        """Needed to use as a key in lru_cache"""
+        """Needed to use as a key in lru_cache."""
         nodeid2wordid = self.nodeid2wordid
         if nodeid2wordid is None:
             nodeid2wordid = []
@@ -47,7 +50,8 @@ class SentgraphExample(T.NamedTuple):
 
 
 def to_undirected(lsedge_index: T.List[Edge]) -> T.List[Edge]:
-    # type ignore is cuz mypy can't figure out the length of a sorted list doesn't change
+    # type ignore is cuz mypy can't figure out the length of a sorted list doesn't
+    # change
     directed_edge_index: T.List[Edge] = sorted(
         set([tuple(sorted(e)) for e in lsedge_index])  # type: ignore
     )
@@ -114,19 +118,6 @@ def _reshape_like(flat: T.Iterator[T.Any], model: T.Any) -> T.Tuple[T.Any, int]:
         reshaped.append(child_reshaped)
 
     return reshaped, consumed
-
-
-def pad_lslsid(
-    lslsid: T.List[T.List[int]], padding_tok_id: int, max_len: T.Optional[int] = None,
-) -> T.List[T.List[int]]:
-    if max_len is None:
-        max_len = max(map(len, lslsid))
-
-    new_lsid = [
-        lsid[:max_len] + [padding_tok_id] * max(0, max_len - len(lsid))
-        for lsid in lslsid
-    ]
-    return new_lsid
 
 
 class Cell:

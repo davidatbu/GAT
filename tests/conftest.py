@@ -18,9 +18,18 @@ import typing as T
 from pathlib import Path
 
 import pytest
+import torch
 
 from Gat import data
 from Gat.neural import layers
+
+
+@pytest.fixture(scope="session")
+def device() -> torch.device:
+    # This was stolen from private torch code
+    if hasattr(torch._C, "_cuda_isDriverSufficient") and torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
 
 
 @pytest.fixture(scope="session")
@@ -34,7 +43,6 @@ def temp_dir() -> T.Iterator[Path]:
 class VocabSetup(T.NamedTuple):
     basic_vocab: data.BasicVocab
     bert_vocab: data.BertVocab
-    lslstok_id: T.List[T.List[int]]
 
 
 @pytest.fixture(scope="session")
@@ -56,18 +64,12 @@ def vocab_setup(temp_dir: Path) -> VocabSetup:
         cache_dir=temp_dir,
     )
 
-    lslstok_id = [
-        [1, 0],
-        [2],
-    ]
-    return VocabSetup(
-        basic_vocab=basic_vocab, bert_vocab=bert_vocab, lslstok_id=lslstok_id
-    )
+    return VocabSetup(basic_vocab=basic_vocab, bert_vocab=bert_vocab)
 
 
 @pytest.fixture(scope="session")
 def bert_embedder(vocab_setup: VocabSetup) -> layers.BertEmbedder:
-    embedder = layers.BertEmbedder(vocab=vocab_setup.bert_vocab, last_how_many_layers=4)
+    embedder = layers.BertEmbedder(vocab=vocab_setup.bert_vocab)
     return embedder
 
 
