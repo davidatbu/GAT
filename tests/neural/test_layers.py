@@ -94,17 +94,18 @@ def gat_setup(device: Device) -> _GatSetup:
     )
 
 
-def test_best_num_heads(gat_setup: _GatSetup, device: Device) -> None:
+def test_best_num_heads(gat_setup: _GatSetup, device: torch.device) -> None:
 
-    if not device != "cuda":
-        print("test skipped. no cuda.")
-        return
+    if not device == torch.device("cuda"):
+        lsnum_heads = [4, 12]
+    else:
+        lsnum_heads = [2, 4, 12, 64, 384]
 
     crs_entrpy = nn.CrossEntropyLoss()
     n_steps = 5000
 
     steps_to_converge_for_num_heads: T.Dict[int, int] = {}
-    for num_heads in (2, 4, 12, 64, 384):
+    for num_heads in lsnum_heads:
         head_size = gat_setup.all_config.model.embed_dim // num_heads
         # Edge features are dependent on head size
         key_edge_features: torch.FloatTensor = torch.randn(  # type: ignore
@@ -120,10 +121,9 @@ def test_best_num_heads(gat_setup: _GatSetup, device: Device) -> None:
         multihead_att = layers.GraphMultiHeadAttention(
             embed_dim=gat_setup.all_config.model.embed_dim,
             num_heads=num_heads,
-            include_edge_features=True,
             edge_dropout_p=0.3,
         )
-        multihead_att.cuda()
+        multihead_att.to(device)
         adam = torch.optim.Adam(
             # Include key_edge_features in features to be optimized
             [key_edge_features]

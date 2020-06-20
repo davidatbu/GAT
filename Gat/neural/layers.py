@@ -29,11 +29,7 @@ logger = logging.getLogger("__main__")
 
 class GraphMultiHeadAttention(nn.Module):  # type: ignore
     def __init__(
-        self,
-        embed_dim: int,
-        num_heads: int,
-        include_edge_features: bool,
-        edge_dropout_p: float,
+        self, embed_dim: int, num_heads: int, edge_dropout_p: float,
     ):
         """Multihead attention that supports an arbitrary graph.
 
@@ -46,7 +42,6 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
         """
         super().__init__()
         self.embed_dim = embed_dim
-        self.include_edge_features = include_edge_features
         self.num_heads = num_heads
         self.head_size = embed_dim // num_heads
         if not self.head_size * num_heads == embed_dim:
@@ -90,10 +85,6 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
         Returns:
             result: (B, N, E)
         """
-        if not self.include_edge_features and (
-            key_edge_features or value_edge_features
-        ):
-            raise Exception("Not insantiated to include edge features.")
         if value_edge_features is not None:
             raise Exception("passing in value_edge_features is not yet implemented")
 
@@ -268,7 +259,6 @@ class GraphMultiHeadAttentionWrapped(nn.Module):  # type: ignore
         self,
         embed_dim: int,
         num_heads: int,
-        include_edge_features: bool,
         edge_dropout_p: float,
         rezero_or_residual: TT.Literal["rezero", "residual"] = "rezero",
     ):
@@ -276,10 +266,7 @@ class GraphMultiHeadAttentionWrapped(nn.Module):  # type: ignore
         super().__init__()
 
         multihead_att = GraphMultiHeadAttention(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-            include_edge_features=True,
-            edge_dropout_p=edge_dropout_p,
+            embed_dim=embed_dim, num_heads=num_heads, edge_dropout_p=edge_dropout_p,
         )
 
         self.wrapper: nn.Module[torch.Tensor]
@@ -405,7 +392,9 @@ class BertEmbedder(Embedder):
 
         # Setup transformers BERT
         config = AutoConfig.from_pretrained(
-            pretrained_model_name_or_path=self._model_name, output_hidden_states=True
+            # TODO: Probalby don't need output_hidden_states for now
+            pretrained_model_name_or_path=self._model_name,
+            output_hidden_states=True,
         )
         self._model: BertModel = AutoModel.from_pretrained(
             pretrained_model_name_or_path=self._model_name, config=config
@@ -746,63 +735,75 @@ class PositionalEmbedder(Embedder):
 class GATLayered(nn.Module):  # type: ignore
     def __init__(
         self,
-        node_features_init: torch.Tensor,
-        edge_features_init: torch.Tensor,
-        node_embedder: Embedder,
-        positional_node_embedder: Embedder,
-        edge_embedder: Embedder,
+        embedding_dim: int,
+        num_heads: int,
+        edge_dropout_p: float,
+        rezero_or_residual: T.Literal["rezero", "residual"],
+        intermediate_dim: int,
+        num_layers: int,
+        feat_dropout_p: bool,
+        node_feature_embedder: Embedder,
+        positional_embedder: Embedder,
+        key_edge_feature_embedder: T.Optional[Embedder],
+        value_edge_feature_embedder: T.Optional[Embedder],
     ):
         """It's like the transformer.
 
         Layers of GraphMultiHeadAttention and FeedForward, each wrapped by a rezero
         connection (or a residual and a layer norm).
         """
+        assert node_feature_embedder.embedding_dim == embedding_dim
+        for embedder in [key_edge_feature_embedder, value_edge_feature_embedder]:
+            if embedder:
+                assert embedder.embedding_dim == embedding_dim
         super().__init__()
 
-        self.node_embedder = layers.Embedder()  # type: ignore # TODO
-        self.key_edge_embedder = layers.Embedder()  # type: ignore # TODO
-        self.positional_embedder = layers.PositionalEmbedder(
-            embedding_dim=config.embed_dim
-        )
-        self.lsmultihead_att_wrapper = nn.ModuleList(
+        self._node_feature_embedder = node_feature_embedder
+        self._key_edge_feature_embedder = key_edge_feature_embedder
+        self._value_edge_feature_embedder = value_edge_feature_embedder
+        self._positional_embedder = positional_embedder
+        self._lsmultihead_att_wrapper: T.Iterable[GraphMultiHeadAttentionWrapped] = nn.ModuleList(  # type: ignore # noqa:
             [
-                layers.GraphMultiHeadAttentionWrapped(
-                    embed_dim=config.embed_dim,
-                    num_heads=config.num_heads,
-                    include_edge_features=config.include_edge_features,
-                    edge_dropout_p=config.edge_dropout_p,
-                    rezero_or_residual=config.rezero_or_residual,
+                GraphMultiHeadAttentionWrapped(
+                    embed_dim=embedding_dim,
+                    num_heads=num_heads,
+                    edge_dropout_p=edge_dropout_p,
+                    rezero_or_residual=rezero_or_residual,
                 )
-                for _ in range(config.nmid_layers)
+                for _ in range(num_layers)
             ]
         )
-        self.lsfeed_forward_wrapper = nn.ModuleList(
+        self._lsfeed_forward_wrapper: T.Iterable[FeedForwardWrapped] = nn.ModuleList(  # type: ignore # noqa:
             [
-                layers.FeedForwardWrapped(
-                    in_out_dim=config.embed_dim,
-                    intermediate_dim=config.intermediate_dim,
-                    rezero_or_residual=config.rezero_or_residual,
-                    feat_dropout_p=config.feat_dropout_p,
+                FeedForwardWrapped(
+                    in_out_dim=embedding_dim,
+                    intermediate_dim=intermediate_dim,
+                    rezero_or_residual=rezero_or_residual,
+                    feat_dropout_p=feat_dropout_p,
                 )
-                for _ in range(config.nmid_layers)
+                for _ in range(num_layers)
             ]
         )
 
-    def forward(self, word_ids: Tensor, adj: Tensor, edge_types: Tensor) -> Tensor:
-        node_features = self.token_embedder(word_ids)
-        node_features = node_features + self.positional_embedder(word_ids)
-        key_edge_features = self.key_edge_embedder(edge_types)
+    def forward(
+        self, word_ids: torch.LongTensor, adj: Tensor, edge_types: torch.LongTensor
+    ) -> Tensor:
+        node_features = self._node_feature_embedder(word_ids)
+        node_features = node_features + self._positional_embedder(word_ids)
 
-        for multihead_att_wrapper, feed_forward_wrapper in zip(
-            self.lsmultihead_att_wrapper, self.lsfeed_forward_wrapper
+        if self._key_edge_feature_embedder:
+            key_edge_features = self._key_edge_feature_embedder(edge_types)
+
+        for multihead_att_wrapped, feed_forward_wrapped in zip(
+            self._lsmultihead_att_wrapper, self._lsfeed_forward_wrapper
         ):
-            node_features = multihead_att_wrapper(
+            node_features = multihead_att_wrapped(
                 node_features=node_features,
                 adj=adj,
                 key_edge_features=key_edge_features,
             )
 
-            node_features = feed_forward_wrapper(node_features=node_features)
+            node_features = feed_forward_wrapped(node_features=node_features)
 
         return node_features
 

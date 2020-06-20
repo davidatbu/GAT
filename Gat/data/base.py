@@ -17,10 +17,10 @@ from typing_extensions import Counter
 from ..sent2graph.base import SentenceToGraph
 from ..sent2graph.dep import DepSentenceToGraph
 from ..sent2graph.srl import SRLSentenceToGraph
+from ..utils import Graph
+from ..utils import GraphExample
 from ..utils import grouper
 from ..utils import SentExample
-from ..utils import SentGraph
-from ..utils import SentgraphExample
 from Gat.data import tokenizers
 from Gat.neural import layers
 
@@ -653,13 +653,13 @@ class BertVocab(Vocab):
 # https://mypy.readthedocs.io/en/stable/common_issues.html#using-classes-that-are-generic-in-stubs-but-not-at-runtime
 # for why.
 if T.TYPE_CHECKING:
-    BaseDataset = Dataset[SentgraphExample]
+    BaseDataset = Dataset[GraphExample]
 else:
     BaseDataset = Dataset
 
 
 class SentenceGraphDataset(BaseDataset, Cacheable):
-    """A dataset that turns a TextSource into a dataset of `SentgraphExample`s.
+    """A dataset that turns a TextSource into a dataset of `GraphExample`s.
 
     We handle here:
         1. That a TextSource might have multiple text columns per example, and therefore
@@ -720,7 +720,7 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
         # Group the sent_ex's into batches
         batched_lssent_ex = grouper(self._txt_src, n=batch_size)
 
-        lssentgraph_ex: T.List[SentgraphExample] = []
+        lssentgraph_ex: T.List[GraphExample] = []
         num_batches = (len(self._txt_src) // batch_size) + int(
             len(self._txt_src) % batch_size != 0
         )
@@ -738,7 +738,7 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
 
     def _batch_process_sent_ex(
         self, lssent_ex: T.List[SentExample]
-    ) -> T.List[SentgraphExample]:
+    ) -> T.List[GraphExample]:
 
         lslssent: T.List[T.List[str]]
         lslbl: T.List[str]
@@ -750,7 +750,7 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
 
         lslbl_id = self._vocab.labels.batch_get_lbl_id(lslbl)
 
-        lsper_column_sentgraph: T.List[T.List[SentGraph]] = []
+        lsper_column_sentgraph: T.List[T.List[Graph]] = []
         for per_column_lssent in zip(*lslssent):
 
             # For turning the sentence into a graph
@@ -763,7 +763,7 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
             # But we do want the UNK tokens for nodeid2wordid
             per_column_nodeid2wordid = self._vocab.batch_get_tok_ids(per_column_lsword)
             per_column_sentgraph = [
-                SentGraph(
+                Graph(
                     lsedge=lsedge,
                     lsedge_type=lsedge_type,
                     lsimp_node=lsimp_node,
@@ -775,23 +775,23 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
             ]
 
             lsper_column_sentgraph.append(per_column_sentgraph)
-        lslssentgraph: T.List[T.List[SentGraph]] = list(
+        lslssentgraph: T.List[T.List[Graph]] = list(
             map(list, zip(*lsper_column_sentgraph))
         )
         res = [
-            SentgraphExample(lssentgraph=lssentgraph, lbl_id=lbl_id)
+            GraphExample(lssentgraph=lssentgraph, lbl_id=lbl_id)
             for lssentgraph, lbl_id in zip(lslssentgraph, lslbl_id)
         ]
         return res
 
-    def _process_lssent_ex(self, sent_ex: SentExample) -> SentgraphExample:
+    def _process_lssent_ex(self, sent_ex: SentExample) -> GraphExample:
         lssent, lbl = sent_ex
-        lssentgraph: T.List[SentGraph] = []
+        lssentgraph: T.List[Graph] = []
         for sent in lssent:
             lsword = self._vocab.tokenizer.tokenize(self._vocab.simplify_txt(sent))
             lsedge, lsedge_type, lsimp_node, _ = self._sent2graph.to_graph(lsword)
             nodeid2wordid = self._vocab.tokenize_and_get_tok_ids(sent)
-            sentgraph = SentGraph(
+            sentgraph = Graph(
                 lsedge=lsedge,
                 lsedge_type=lsedge_type,
                 lsimp_node=lsimp_node,
@@ -799,19 +799,19 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
             )
             lssentgraph.append(sentgraph)
         lbl_id = self._vocab.labels.get_lbl_id(lbl)
-        sentgraph_ex = SentgraphExample(lssentgraph=lssentgraph, lbl_id=lbl_id)
+        sentgraph_ex = GraphExample(lssentgraph=lssentgraph, lbl_id=lbl_id)
         return sentgraph_ex
 
     def __len__(self) -> int:
         return len(self._lssentgraph_ex)
 
-    def __getitem__(self, idx: int) -> SentgraphExample:
+    def __getitem__(self, idx: int) -> GraphExample:
         if idx > len(self):
             raise IndexError(f"{idx} is >= {len(self)}")
 
         return self._lssentgraph_ex[idx]
 
-    def sentgraph_ex_to_sent_ex(self, sent_graph_ex: SentgraphExample) -> SentExample:
+    def sentgraph_ex_to_sent_ex(self, sent_graph_ex: GraphExample) -> SentExample:
         lslsword_id = [
             sentgraph.nodeid2wordid for sentgraph in sent_graph_ex.lssentgraph
         ]
@@ -823,11 +823,11 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
 
         return SentExample(lssent=lssent, lbl=lbl)
 
-    def __iter__(self,) -> T.Iterator[SentgraphExample]:
+    def __iter__(self,) -> T.Iterator[GraphExample]:
         for i in range(len(self)):
             yield self[i]
 
-    def sentgraph_to_svg(self, sentgraph: SentGraph) -> str:
+    def sentgraph_to_svg(self, sentgraph: Graph) -> str:
         import networkx as nx  # type: ignore
 
         g = nx.DiGraph()
@@ -856,21 +856,10 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
 
     @staticmethod
     def collate_fn(
-        batch: T.List[SentgraphExample],
-    ) -> T.Tuple[T.List[T.List[SentGraph]], T.List[int]]:
+        batch: T.List[GraphExample],
+    ) -> T.Tuple[T.List[T.List[Graph]], T.List[int]]:
         X, y = zip(*batch)
         return list(X), list(y)
-
-
-class GraphCollateFunction:
-    """A configurable collate_fn for pytorch's dataloaders.
-
-    Features:
-        1. Make edges undirected.
-        2. Add directed edges in the other direction of the directed edges present.
-    """
-
-    pass
 
 
 SENT2GRAPHS: T.Dict[str, T.Type[SentenceToGraph]] = {
