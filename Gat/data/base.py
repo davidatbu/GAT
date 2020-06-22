@@ -353,15 +353,11 @@ class Numerizer(abc.ABC):
         return "[PAD]"
 
 
-class Vocab(Numerizer, Cacheable):
+class Vocab(Numerizer):
     """A class to encapsulate preprocessing of text, and mapping tokens to ids.
 
     Also contains a `Labels` object.
     """
-
-    def __init__(self, cache_dir: Path, ignore_cache: bool = False) -> None:
-        """Look at superclass doc."""
-        Cacheable.__init__(self, cache_dir, ignore_cache)
 
     def simplify_txt(self, txt: str) -> str:
         """Do things like lowercasing stripping out punctuation, ..etc."""
@@ -397,12 +393,8 @@ class Vocab(Numerizer, Cacheable):
         """Token id for uknown token."""
         pass
 
-    @abc.abstractproperty
-    def labels(self) -> Labels:
-        pass
 
-
-class BasicVocab(Vocab):
+class BasicVocab(Vocab, Cacheable):
     """Vocab subclass that should work for most non-sub-word level tasks.
 
     Supports lowercasing, having a minimum count(unk tokens).
@@ -525,19 +517,10 @@ class BasicVocab(Vocab):
 class BertVocab(Vocab):
     """Wrapper around the tokenizer from the transformers library."""
 
-    _model_name = "bert-base-uncased"
-
-    def __init__(
-        self,
-        txt_src: TextSource,
-        tokenizer: tokenizers.bert.WrappedBertTokenizer,
-        cache_dir: Path,
-        ignore_cache: bool = False,
-    ) -> None:
+    def __init__(self) -> None:
         """Extract unique labels."""
-        self._tokenizer = tokenizer
-        self._txt_src = txt_src
-        super().__init__(cache_dir, ignore_cache)
+        self._tokenizer = tokenizers.bert.WrappedBertTokenizer()
+        super().__init__()
 
         self._pad_id = 0
         self._cls_id = 1
@@ -583,29 +566,6 @@ class BertVocab(Vocab):
             lsword_id
         )
         return lstok
-
-    @property
-    def _cached_attrs(self) -> T.List[str]:
-        """Look at Cacheable._cached_attrs."""
-        return ["_labels"]
-
-    def process(self) -> None:
-        """Look at Cacheable.process().
-
-        Sets:
-            self._labels
-        """
-        lslbl: T.List[str] = []
-        for _, lbl in self._txt_src:
-            lslbl.append(lbl)
-        id2lbl = list(sorted(set(lslbl)))
-        self._labels = Labels(id2lbl)
-
-        logger.info(f"Made id2lbl of length {len(self.labels.all_lbls)}")
-
-    @property
-    def labels(self) -> Labels:
-        return self._labels
 
     def prepare_for_embedder(
         self,
@@ -671,12 +631,16 @@ class NiceDataset(Dataset, T.Iterable[_T], abc.ABC):  # type: ignore
 
         return NewDataset()
 
+    @abc.abstractmethod
+    def __getitem__(self, i: int) -> _T:
+        pass
+
     def __iter__(self,) -> T.Iterator[_T]:
         for i in range(len(self)):
             yield self[i]
 
 
-class SentenceGraphDataset(NiceDataset[Graph], Cacheable):
+class SentenceGraphDataset(NiceDataset[GraphExample], Cacheable):
     """A dataset that turns a TextSource into a dataset of `GraphExample`s.
 
     We handle here:
@@ -691,7 +655,7 @@ class SentenceGraphDataset(NiceDataset[Graph], Cacheable):
         self,
         txt_src: TextSource,
         sent2graph: SentenceToGraph,
-        vocab: Vocab,
+        vocab: BasicVocab,
         cache_dir: Path,
         ignore_cache: bool = False,
         processing_batch_size: int = 800,
@@ -865,7 +829,7 @@ def load_splits(
     delimiter: str = "\t",
     unk_thres: int = 2,
 ) -> T.Tuple[
-    T.Dict[str, SentenceGraphDataset], T.Dict[str, CsvTextSource], Vocab,
+    T.Dict[str, SentenceGraphDataset], T.Dict[str, CsvTextSource], BasicVocab,
 ]:
     """Build `Vocab` and `Labels` from training data. Process all splits."""
     assert "train" in splits

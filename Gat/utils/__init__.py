@@ -8,11 +8,13 @@ from .base import GraphExample
 from .base import grouper
 from .base import Node
 from .base import NodeList
+from .base import plotly_cm
 from .base import SentExample
 
 
 __all__ = [
     "SentExample",
+    "plotly_cm",
     "Graph",
     "GraphExample",
     "grouper",

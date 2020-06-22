@@ -17,6 +17,7 @@ from transformers import AutoModel
 from transformers import BertModel
 
 from Gat import data
+from Gat.config import GATLayeredConfig
 
 
 logger = logging.getLogger("__main__")
@@ -727,12 +728,7 @@ class PositionalEmbedder(Embedder):
 class GATLayered(nn.Module):  # type: ignore
     def __init__(
         self,
-        num_heads: int,
-        edge_dropout_p: float,
-        rezero_or_residual: T.Literal["rezero", "residual"],
-        intermediate_dim: int,
-        num_layers: int,
-        feat_dropout_p: float,
+        config: GATLayeredConfig,
         lsnode_feature_embedder: T.List[Embedder],
         key_edge_feature_embedder: T.Optional[Embedder],
         value_edge_feature_embedder: T.Optional[Embedder],
@@ -777,33 +773,37 @@ class GATLayered(nn.Module):  # type: ignore
             [
                 GraphMultiHeadAttentionWrapped(
                     embed_dim=embedding_dim,
-                    num_heads=num_heads,
-                    edge_dropout_p=edge_dropout_p,
-                    rezero_or_residual=rezero_or_residual,
+                    num_heads=config.num_heads,
+                    edge_dropout_p=config.edge_dropout_p,
+                    rezero_or_residual=config.rezero_or_residual,
                 )
-                for _ in range(num_layers)
+                for _ in range(config.num_layers)
             ]
         )
         self._lsfeed_forward_wrapper: T.Iterable[FeedForwardWrapped] = nn.ModuleList(  # type: ignore # noqa:
             [
                 FeedForwardWrapped(
                     in_out_dim=embedding_dim,
-                    intermediate_dim=intermediate_dim,
-                    rezero_or_residual=rezero_or_residual,
-                    feat_dropout_p=feat_dropout_p,
+                    intermediate_dim=config.intermediate_dim,
+                    rezero_or_residual=config.rezero_or_residual,
+                    feat_dropout_p=config.feat_dropout_p,
                 )
-                for _ in range(num_layers)
+                for _ in range(config.num_layers)
             ]
         )
 
     def forward(
-        self, node_ids: torch.LongTensor, adj: Tensor, edge_types: torch.LongTensor
+        self,
+        node_ids: torch.LongTensor,
+        adj: Tensor,
+        edge_types: T.Optional[torch.LongTensor],
     ) -> Tensor:
         node_features = self._lsnode_feature_embedder[0](node_ids)
         for embedder in self._lsnode_feature_embedder[1:]:
             node_features = node_features + embedder(node_ids)
 
         if self._key_edge_feature_embedder:
+            assert edge_types is not None
             key_edge_features = self._key_edge_feature_embedder(edge_types)
 
         for multihead_att_wrapped, feed_forward_wrapped in zip(
@@ -820,7 +820,10 @@ class GATLayered(nn.Module):  # type: ignore
         return node_features
 
     def __call__(
-        self, word_ids: torch.LongTensor, adj: Tensor, edge_types: torch.LongTensor
+        self,
+        word_ids: torch.LongTensor,
+        adj: Tensor,
+        edge_types: T.Optional[torch.LongTensor],
     ) -> Tensor:
         return super.__call__(  # type: ignore
             word_ids=word_ids, adj=adj, edge_types=edge_types
