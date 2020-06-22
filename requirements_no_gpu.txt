@@ -4,6 +4,7 @@ scikit-learn==0.22.2.post1
 tensorboard==2.2.1
 torch==1.5.0+cpu
 torchvision==0.6.0+cpu
+pytorch-lightning==0.8.1
 tqdm==4.45.0
 transformers==2.9.1
 wandb==0.8.36
