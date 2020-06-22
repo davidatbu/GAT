@@ -1,10 +1,6 @@
 """THings that produce losses."""
+import typing as T
 from functools import lru_cache
-from typing import Iterator
-from typing import List
-from typing import Optional
-from typing import Set
-from typing import Tuple
 
 import torch
 import torch.nn as nn
@@ -12,192 +8,121 @@ from torch import Tensor
 
 from ..config.base import GATConfig
 from ..config.base import GATForSeqClsfConfig
-from ..neural import layers
-from ..utils.base import Edge
-from ..utils.base import EdgeType
-from ..utils.base import Node
-from ..utils.base import SentGraph
+from Gat import data
+from Gat.neural import layers
 
 
-class GATModel(nn.Module):  # type: ignore
-    def __init__(self, config: GATConfig, emb_init: Optional[Tensor]):
-        super().__init__()
-        self.cls_id = config.cls_id
-        self.head_to_cls_edge_type = config.nedge_type
-        self.undirected = config.undirected
-        self.gat_layered = GATLayered(config, emb_init)
-
-    def _coalesce_graph(
-        self, batch: List[SentGraph]
-    ) -> Tuple[List[Edge], List[EdgeType], List[List[Node]], List[int], List[int]]:
+class GATForSequenceClassification(nn.Module):  # type: ignore
+    def __init__(
+        self,
+        num_heads: int,
+        embedding_dim: int,
+        edge_dropout_p: float,
+        rezero_or_residual: T.Literal["rezero", "residual"],
+        intermediate_dim: int,
+        num_layers: int,
+        num_classes: int,
+        padding_tok_id: int,
+        cls_tok_id: int,
+        feat_dropout_p: float,
+        node_embedding_type: T.Literal["pooled_bert", "basic"],
+        use_edge_features: bool,
+        num_edge_types: int,
+        word_vocab: data.BasicVocab,
+        sub_word_vocab: T.Optional[data.Vocab] = None,
+    ):
         """
-        Increment the relative node numbers in the adjacency list, and the list of key nodes
 
-        Also, add edges in the other direction if we're doing unidirected.
+        Args:
+            cls_tok_id: We need to assert that word_ids[:, 0] in `self.forward()` is
+                indeed equal to it.
         """
 
-        lsedge: List[Edge] = []
-        lsedge_type: List[EdgeType] = []
-        lslsimp_node: List[List[Node]] = []
-        nodeid2wordid: List[int] = []
-        lsposition_id: List[int] = []
+        self._cls_tok_id = cls_tok_id
 
-        counter = 0
-
-        for one_lsedge, one_lsedge_type, one_lsimp_node, one_nodeid2wordid in batch:
-            assert one_nodeid2wordid is not None
-            # Extend nodeid2wordid
-            nodeid2wordid.extend(one_nodeid2wordid)
-
-            # Extend edge index, but increment the numbers
-            lsedge.extend(
-                [(edge[0] + counter, edge[1] + counter) for edge in one_lsedge]
+        positional_embedder = layers.PositionalEmbedder(embedding_dim)
+        if node_embedding_type == "basic":
+            word_embedder: layers.Embedder = layers.BasicEmbedder(
+                num_embeddings=word_vocab.vocab_size,
+                embedding_dim=embedding_dim,
+                padding_idx=padding_tok_id,
+            )
+        else:
+            assert sub_word_vocab is not None
+            sub_word_embedder = layers.BertEmbedder()
+            word_embedder = layers.ReconcilingEmbedder(
+                sub_word_vocab, word_vocab, sub_word_embedder
             )
 
-            # Extend edge type
-            lsedge_type.extend(one_lsedge_type)
+        if use_edge_features:
+            key_edge_feature_embedder: T.Optional[
+                layers.BasicEmbedder
+            ] = layers.BasicEmbedder(
+                num_embeddings=num_edge_types,
+                embedding_dim=embedding_dim,
+                padding_idx=word_vocab.padding_tok_id,
+            )
+        else:
+            key_edge_feature_embedder = None
 
-            # Extend lslshead node as well, but increment the numbers
-            lslsimp_node.append([node + counter for node in one_lsimp_node])
+        lsnode_feature_embedder = [word_embedder, positional_embedder]
 
-            # Add position ids
-            lsposition_id.extend(range(len(one_nodeid2wordid)))
-
-            # Increment node counter
-            counter += len(one_nodeid2wordid)
-
-        if self.undirected:
-            setedge: Set[Edge] = set()  # Use to keep a unique list of nodes
-            new_lsedge: List[Edge] = []
-            new_lsedge_type: List[EdgeType] = []
-
-            for (n1, n2), edge_type in zip(lsedge, lsedge_type):
-                if n1 > n2:
-                    n2, n1 = n1, n2
-                if (n1, n2) not in setedge:
-                    new_lsedge.extend([(n1, n2), (n2, n1)])
-                    new_lsedge_type.extend([edge_type, edge_type])
-                    setedge.add((n1, n2))
-
-            lsedge = new_lsedge
-            lsedge_type = new_lsedge_type
-        return (lsedge, lsedge_type, lslsimp_node, nodeid2wordid, lsposition_id)
-
-
-class GATForUnorderedSeqPairClsf(GATModel):
-    raise NotImplementedError()
-
-
-class GATForSeqClsf(GATModel):
-    def __init__(self, config: GATForSeqClsfConfig, emb_init: Optional[Tensor]) -> None:
-        super().__init__(config, emb_init=emb_init)
-        embed_dim = config.embed_dim
-        nclass = config.nclass
-        feat_dropout_p = config.feat_dropout_p
-
-        self.linear = nn.Linear(embed_dim, nclass)
-        self.dropout = nn.Dropout(p=feat_dropout_p)
-        self.crs_entrpy = nn.CrossEntropyLoss()
-
-    @staticmethod
-    def peeled_batch_yielder(batch: List[List[SentGraph]]) -> Iterator[SentGraph]:
-        for ex in batch:
-            yield ex[0]
-
-    @lru_cache(maxsize=int(1e6))
-    def connect_to_cls_node(self, sentgraph: SentGraph) -> SentGraph:
-        # Connect all the "head nodes" to a new [CLS] node
-        lsedge, lsedge_type, lsimp_node, nodeid2wordid = sentgraph
-        assert nodeid2wordid is not None
-        assert self.cls_id not in nodeid2wordid
-        new_nodeid2wordid = nodeid2wordid + [self.cls_id]
-
-        new_cls_node = len(new_nodeid2wordid) - 1
-        lshead_to_cls_edge = [(node, new_cls_node) for node in lsimp_node]
-        lshead_to_cls_edge_type = [self.head_to_cls_edge_type for _ in lsimp_node]
-        new_lsedge = lsedge + lshead_to_cls_edge
-        new_lsedge_type = lsedge_type + lshead_to_cls_edge_type
-
-        new_lsimp_node = [new_cls_node]
-
-        return SentGraph(
-            lsedge=new_lsedge,
-            lsedge_type=new_lsedge_type,
-            lsimp_node=new_lsimp_node,
-            nodeid2wordid=new_nodeid2wordid,
+        self._gat_layered = layers.GATLayered(
+            num_heads,
+            edge_dropout_p,
+            rezero_or_residual,
+            intermediate_dim,
+            num_layers,
+            feat_dropout_p,
+            lsnode_feature_embedder,
+            key_edge_feature_embedder,
+            None,
         )
 
-    def prepare_batch(
-        self, batch: List[List[SentGraph]]
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-        """
-         For each graph in batch
-            connect each key node to a new, "CLS" node
-            make that "CLS" node the only node in list of key nodes
-        do super()._coalesce_graph()
-        """
+        self.dropout = nn.Dropout(feat_dropout_p)
+        self.linear = nn.Linear(embedding_dim, num_classes)
+        self._crs_entrpy = nn.CrossEntropyLoss()
 
-        # Ensure that we are processing only one sentgraph per example
-        assert set(map(len, batch)) == {1}
+    @T.overload
+    def forward(
+        self,
+        word_ids: torch.LongTensor,
+        adj: torch.LongTensor,
+        edge_types: torch.LongTensor,
+    ) -> T.Tuple[Tensor]:
+        ...
 
-        new_batch: List[SentGraph] = [
-            self.connect_to_cls_node(sentgraph)
-            for sentgraph in self.peeled_batch_yielder(batch)
-        ]
-
-        final_pre_torch_preped_X = self._coalesce_graph(new_batch)
-        (
-            lsedge,
-            lsedge_type,
-            lslsimp_node,
-            nodeid2wordid,
-            lsposition_id,
-        ) = final_pre_torch_preped_X
-        # "unpack" lscls_node ,since per batch, we're only looking at output of CLS token
-        assert set(map(len, lslsimp_node)) == {1}
-
-        # Device
-        device = next(self.parameters()).device
-
-        # word ids
-        word_ids = torch.tensor(nodeid2wordid, dtype=torch.long, device=device)
-        position_ids = torch.tensor(lsposition_id, dtype=torch.long, device=device)
-
-        # ADjacency
-        N = len(nodeid2wordid)
-        adj: torch.Tensor = torch.zeros(N, N, dtype=torch.float, device=device)
-        adj[list(zip(*lsedge))] = 1
-
-        # Edge types
-        edge_type: Tensor = torch.tensor(lsedge_type, dtype=torch.long, device=device)
-        # Cls node
-        cls_node = torch.tensor([lsimp_node[0] for lsimp_node in lslsimp_node])
-
-        return (word_ids, position_ids, adj, edge_type, cls_node)
+    @T.overload
+    def forward(
+        self,
+        word_ids: torch.LongTensor,
+        adj: torch.LongTensor,
+        edge_types: torch.LongTensor,
+        labels: torch.LongTensor,
+    ) -> T.Tuple[Tensor, Tensor]:
+        ...
 
     def forward(
         self,
-        prepared_X: Tuple[Tensor, Tensor, Tensor, Tensor, Tensor],
-        y: Optional[List[int]] = None,
-    ) -> Tuple[Tensor, ...]:
-        """
+        word_ids: torch.LongTensor,
+        adj: torch.LongTensor,
+        edge_types: torch.LongTensor,
+        labels: T.Optional[torch.LongTensor] = None,
+    ) -> T.Tuple[Tensor, ...]:
+        h = self._gat_layered(word_ids=word_ids, adj=adj, edge_types=edge_types)
 
-        Returns
-        -------
-        """
-        word_ids, position_ids, adj, edge_type, cls_node = prepared_X
-
-        h = self.gat_layered(
-            word_ids=word_ids, position_ids=position_ids, adj=adj, edge_type=edge_type
+        assert word_ids[:, 0].equal(
+            torch.tensor(self._cls_tok_id, dtype=torch.long)
+            .align_as(word_ids)
+            .expand_as(word_ids)
         )
-
-        cls_id_h = h[cls_node]
+        cls_id_h = h[:, 0]
 
         cls_id_h = self.dropout(cls_id_h)
         logits = self.linear(cls_id_h)
 
-        if y is not None:
-            new_y = torch.tensor(y, device=next(self.parameters()).device)
-            loss = self.crs_entrpy(logits, new_y)
+        if labels is not None:
+            loss = self._crs_entrpy(logits, labels)
+
             return (logits, loss)
         return (logits,)
