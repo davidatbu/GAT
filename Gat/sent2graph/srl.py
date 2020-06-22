@@ -19,7 +19,7 @@ from typing_extensions import Literal
 from ..utils.base import Edge
 from ..utils.base import EdgeType
 from ..utils.base import Node
-from ..utils.base import SentGraph
+from ..utils.base import Graph
 from ..utils.base import Slice
 from .base import SentenceToGraph
 
@@ -28,11 +28,12 @@ logger = logging.getLogger("__main__")
 
 if TYPE_CHECKING:  # painful type checking
     task_queue_t = Queue[Tuple[int, Union[Dict[str, Any], Literal["STOP"]]]]
-    done_queue_t = Queue[Tuple[int, SentGraph]]
+    done_queue_t = Queue[Tuple[int, Graph]]
 else:
     task_queue_t = done_queue_t = Queue
 
-# Belongs better in SRLSentenceToGraph, but to amek it easy to use multiprocessing later, we have it as global
+# Belongs better in SRLSentenceToGraph, but to amek it easy to use multiprocessing
+# later, we have it as global
 _id2role: List[str] = [
     "ARG0",
     "ARG1",
@@ -126,7 +127,7 @@ class SRLSentenceToGraph(SentenceToGraph):
             logger.warning("NOT USING CUDA FOR SRL")
             cuda_device = -1
         self.allen = Predictor.from_path(
-            "/projectnb/llamagrp/davidat/pretrained_models/allenlp/bert-base-srl-2020.03.24.tar.gz",
+            "/projectnb/llamagrp/davidat/pretrained_models/allenlp/bert-base-srl-2020.03.24.tar.gz",  # noqa:
             cuda_device=cuda_device,
         )
 
@@ -144,11 +145,11 @@ class SRLSentenceToGraph(SentenceToGraph):
     def __repr__(self) -> str:
         return "BSrl"
 
-    def to_graph(self, lsword: List[str]) -> SentGraph:
+    def to_graph(self, lsword: List[str]) -> Graph:
         srl_resp = self.allen.predict(" ".join(lsword))
         return _srl_resp_to_graph(srl_resp)
 
-    def batch_to_graph(self, lslsword: List[List[str]]) -> List[SentGraph]:
+    def batch_to_graph(self, lslsword: List[List[str]]) -> List[Graph]:
         req_json = [{"sentence": " ".join(lsword)} for lsword in lslsword]
         lssrl_resp = self.allen.predict_batch_json(req_json)
         if not self.use_workers:
@@ -207,7 +208,7 @@ def _get_args_length(pred_and_args: Tuple[Node, List[Tuple[EdgeType, Slice]]]) -
     return max(all_slice_end_points) - min(all_slice_end_points)
 
 
-def _srl_resp_to_graph(srl_resp: Dict[str, Any]) -> SentGraph:
+def _srl_resp_to_graph(srl_resp: Dict[str, Any]) -> Graph:
     logger.debug(pformat(srl_resp, indent=2))
     # Sample response
     #         # Assert we had the same tokenization
@@ -243,11 +244,13 @@ def _srl_resp_to_graph(srl_resp: Dict[str, Any]) -> SentGraph:
             assert cur_role is not None
             role2slice[cur_role] = cur_slice
 
-        # Check that the "predicate" is present, sometimes, allen dones't give me the predicate
+        # Check that the "predicate" is present, sometimes, allen dones't give me the
+        # predicate.
         # predicate is marked with a "V" "role"
         if "V" not in role2slice:
             logger.warning(
-                f"NO PREDICATE IN PARSE OF {srl_resp['words']}. Here is one of the returned structs: {srl_desc}"
+                f"NO PREDICATE IN PARSE OF {srl_resp['words']}. Here is one of the "
+                f"returned structs: {srl_desc}"
             )
             continue
 
@@ -289,7 +292,7 @@ def _srl_resp_to_graph(srl_resp: Dict[str, Any]) -> SentGraph:
     lshead_node = list(sorted(setnode))
 
     # The nodeid2wordid is None
-    return SentGraph(lsedge, lsedge_type, lshead_node, None)
+    return Graph(lsedge, lsedge_type, lshead_node, None)
 
 
 def _srl_resp_to_graph_worker(

@@ -46,6 +46,46 @@ class Graph(T.NamedTuple):
 
         return hash(tuple(tuple(ls) for ls in to_hash))
 
+    def sentgraph_to_svg(
+        self,
+        node_namer: T.Callable[[int], str] = lambda i: str(i),
+        edge_namer: T.Callable[[int], str] = lambda i: str(i),
+    ) -> str:
+        """Draw an SVG image using networkx.
+
+        Args:
+            node_namer: Turn the global node ids to human readable names.
+            edge_namer: Same as above, but for the edges.
+
+        Returns:
+            svg_str: An SVG string.
+        """
+        import networkx as nx  # type: ignore
+
+        g = nx.DiGraph()
+
+        def quote(s: str) -> str:
+            """Because of a PyDot bug, we need this."""
+            return '"' + s.replace('"', '"') + '"'
+
+        assert self.nodeid2wordid is not None
+
+        # NetworkX format
+        lsnode_name: T.List[T.Tuple[int, T.Dict[str, str]]] = [
+            (node_id, {"label": quote(name)})
+            for node_id, name in enumerate(map(node_namer, self.nodeid2wordid))
+        ]
+
+        # Edges in nx format
+        lsedge_name: T.List[T.Tuple[int, int, T.Dict[str, str]]] = [
+            (n1, n2, {"label": quote(edge_namer(edge_id))})
+            for (n1, n2), edge_id in zip(self.lsedge, self.lsedge_type)
+        ]
+        g.add_nodes_from(lsnode_name)
+        g.add_edges_from(lsedge_name)
+        p = nx.drawing.nx_pydot.to_pydot(g)
+        return p.create_svg().decode()  # type: ignore
+
 
 class SentExample(T.NamedTuple):
     """A list of sentences and a label."""

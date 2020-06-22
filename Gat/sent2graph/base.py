@@ -4,7 +4,7 @@ from typing import Dict
 from typing import List
 from typing import TypeVar
 
-from ..utils.base import SentGraph
+from ..utils.base import Graph
 
 
 logging.basicConfig()
@@ -29,11 +29,11 @@ class SentenceToGraph(abc.ABC):
     def __repr__(self) -> str:
         pass
 
-    def batch_to_graph(self, lslsword: List[List[str]]) -> List[SentGraph]:
+    def batch_to_graph(self, lslsword: List[List[str]]) -> List[Graph]:
         return [self.to_graph(lsword) for lsword in lslsword]
 
     @abc.abstractmethod
-    def to_graph(self, lsword: List[str]) -> SentGraph:
+    def to_graph(self, lsword: List[str]) -> Graph:
         pass
 
     def init_workers(self) -> None:

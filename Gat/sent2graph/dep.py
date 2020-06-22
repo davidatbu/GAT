@@ -7,7 +7,7 @@ from spacy.tokens import Doc  # type: ignore
 from ..utils.base import EdgeList
 from ..utils.base import EdgeTypeList
 from ..utils.base import NodeList
-from ..utils.base import SentGraph
+from ..utils.base import Graph
 from .base import SentenceToGraph
 
 # https://github.com/explosion/spacy-models/releases/tag/en_core_web_md-2.2.0
@@ -77,7 +77,7 @@ class DepSentenceToGraph(SentenceToGraph):
     def id2edge_type(self) -> List[str]:
         return _id2edge_type
 
-    def to_graph(self, lsword: List[str]) -> SentGraph:
+    def to_graph(self, lsword: List[str]) -> Graph:
         sent = " ".join(lsword)
         doc: Doc = self._nlp(sent)
 
@@ -96,7 +96,7 @@ class DepSentenceToGraph(SentenceToGraph):
 
         assert lsimp_node != []
 
-        return SentGraph(
+        return Graph(
             lsedge=lsedge,
             lsedge_type=lsedge_type,
             lsimp_node=lsimp_node,

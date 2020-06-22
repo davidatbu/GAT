@@ -10,6 +10,8 @@ from pathlib import Path
 
 import torch
 import typing_extensions as TT
+from Gat.data import tokenizers
+from Gat.neural import layers
 from torch.utils.data import Dataset
 from tqdm import tqdm  # type: ignore
 from typing_extensions import Counter
@@ -21,11 +23,9 @@ from ..utils import Graph
 from ..utils import GraphExample
 from ..utils import grouper
 from ..utils import SentExample
-from Gat.data import tokenizers
-from Gat.neural import layers
 
 
-logger = logging.getLogger("__main__")
+logger = logging.getLogger(__name__)
 
 
 class TextSource(T.Iterable[SentExample], T.Sized):
@@ -270,7 +270,67 @@ class Labels:
         return self._id2lbl
 
 
-class Vocab(Cacheable, abc.ABC):
+class Numerizer(abc.ABC):
+    # TODO: Document
+
+    @abc.abstractmethod
+    def get_toks(self, lstok_id: T.List[int]) -> T.List[str]:
+        """Get a list of tokens given a list of token ids."""
+        pass
+
+    def batch_get_toks(self, lslstok_id: T.List[T.List[int]]) -> T.List[T.List[str]]:
+        """Batch version of get_toks."""
+        return [self.get_toks(lstok_id) for lstok_id in lslstok_id]
+
+    @abc.abstractmethod
+    def get_tok_ids(self, lsword: T.List[str]) -> T.List[int]:
+        """Get token ids for the tokens in vocab."""
+        pass
+
+    def batch_get_tok_ids(self, lslsword: T.List[T.List[str]]) -> T.List[T.List[int]]:
+        """Batch version of get_tok_ids."""
+        return [self.get_tok_ids(lsword) for lsword in lslsword]
+
+    def prepare_for_embedder(
+        self,
+        lslstok_id: T.List[T.List[int]],
+        embedder: layers.Embedder,
+        device: torch.device = torch.device("cpu"),
+    ) -> torch.LongTensor:
+        """Pad/truncate tokens, convert them to torch tensors and move them to device.
+
+        The padding token is `self.padding_tok_id`. The length of the sequence after
+        padding/truncating will be equal to the longest sequence in `lslstok_id` if
+        `seq_len` is `None`.
+
+        Args:
+            lslstok_id:
+            embedder:
+            device:
+
+        Returns:
+            tok_ids: (B, L, E)
+        """
+        seq_len = max(map(len, lslstok_id))
+        if embedder.max_seq_len is not None and embedder.max_seq_len > seq_len:
+            seq_len = embedder.max_seq_len
+
+        padded_lslstok_id = [
+            lstok_id[:seq_len] + [self.padding_tok_id] * max(0, seq_len - len(lstok_id))
+            for lstok_id in lslstok_id
+        ]
+        tok_ids: torch.LongTensor = torch.tensor(  # type: ignore
+            padded_lslstok_id, dtype=torch.long, device=device,
+        )
+        return tok_ids.rename("B", "L")  # type: ignore
+
+    @abc.abstractproperty
+    def padding_tok_id(self) -> int:
+        """The padding token id."""
+        pass
+
+
+class Vocab(Numerizer, Cacheable):
     """A class to encapsulate preprocessing of text, and mapping tokens to ids.
 
     Also contains a `Labels` object.
@@ -293,24 +353,6 @@ class Vocab(Cacheable, abc.ABC):
         """Return the tokenizer used to produce this vocabulary."""
         pass
 
-    @abc.abstractmethod
-    def get_toks(self, lstok_id: T.List[int]) -> T.List[str]:
-        """Get a list of tokens given a list of token ids."""
-        pass
-
-    def batch_get_toks(self, lslstok_id: T.List[T.List[int]]) -> T.List[T.List[str]]:
-        """Batch version of get_toks."""
-        return [self.get_toks(lstok_id) for lstok_id in lslstok_id]
-
-    @abc.abstractmethod
-    def get_tok_ids(self, lsword: T.List[str]) -> T.List[int]:
-        """Get token ids for the tokens in vocab."""
-        pass
-
-    def batch_get_tok_ids(self, lslsword: T.List[T.List[str]]) -> T.List[T.List[int]]:
-        """Batch version of get_tok_ids."""
-        return [self.get_tok_ids(lsword) for lsword in lslsword]
-
     def tokenize_and_get_tok_ids(self, txt: str) -> T.List[int]:
         """Convinience function to call tokenize and get tok ids in one."""
         return self.get_tok_ids(self.tokenizer.tokenize(self.simplify_txt(txt)))
@@ -318,11 +360,6 @@ class Vocab(Cacheable, abc.ABC):
     def batch_tokenize_and_get_tok_ids(self, lstxt: T.List[str]) -> T.List[T.List[int]]:
         """Batch version."""
         return self.batch_get_tok_ids(self.tokenizer.batch_tokenize(lstxt))
-
-    @abc.abstractproperty
-    def padding_tok_id(self) -> int:
-        """The padding token id."""
-        pass
 
     @abc.abstractproperty
     def cls_tok_id(self) -> int:
@@ -480,39 +517,6 @@ class BasicVocab(Vocab):
     @property
     def labels(self) -> Labels:
         return self._labels
-
-    def prepare_for_embedder(
-        self,
-        lslstok_id: T.List[T.List[int]],
-        embedder: layers.Embedder,
-        device: torch.device = torch.device("cpu"),
-    ) -> torch.LongTensor:
-        """Pad/truncate tokens, convert them to torch tensors and move them to device.
-
-        The padding token is `self.padding_tok_id`. The length of the sequence after
-        padding/truncating will be equal to the longest sequence in `lslstok_id` if
-        `seq_len` is `None`.
-
-        Args:
-            lslstok_id:
-            embedder:
-            device:
-
-        Returns:
-            tok_ids: (B, L, E)
-        """
-        seq_len = max(map(len, lslstok_id))
-        if embedder.max_seq_len is not None and embedder.max_seq_len > seq_len:
-            seq_len = embedder.max_seq_len
-
-        padded_lslstok_id = [
-            lstok_id[:seq_len] + [self.padding_tok_id] * max(0, seq_len - len(lstok_id))
-            for lstok_id in lslstok_id
-        ]
-        tok_ids: torch.LongTensor = torch.tensor(  # type: ignore
-            padded_lslstok_id, dtype=torch.long, device=device,
-        )
-        return tok_ids.rename("B", "L")  # type: ignore
 
 
 class BertVocab(Vocab):
@@ -826,33 +830,6 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
     def __iter__(self,) -> T.Iterator[GraphExample]:
         for i in range(len(self)):
             yield self[i]
-
-    def sentgraph_to_svg(self, sentgraph: Graph) -> str:
-        import networkx as nx  # type: ignore
-
-        g = nx.DiGraph()
-
-        def quote(s: str) -> str:
-            return '"' + s.replace('"', '"') + '"'
-
-        assert sentgraph.nodeid2wordid is not None
-        # NetworkX format
-        lsnode_word: T.List[T.Tuple[int, T.Dict[str, str]]] = [
-            (node_id, {"label": quote(word)})
-            for node_id, word in enumerate(
-                self._vocab.get_toks(sentgraph.nodeid2wordid)
-            )
-        ]
-
-        # Edges in nx format
-        lsedge_role: T.List[T.Tuple[int, int, T.Dict[str, str]]] = [
-            (n1, n2, {"label": quote(self._sent2graph.id2edge_type[edge_id])})
-            for (n1, n2), edge_id in zip(sentgraph.lsedge, sentgraph.lsedge_type)
-        ]
-        g.add_nodes_from(lsnode_word)
-        g.add_edges_from(lsedge_role)
-        p = nx.drawing.nx_pydot.to_pydot(g)
-        return p.create_svg().decode()  # type: ignore
 
     @staticmethod
     def collate_fn(

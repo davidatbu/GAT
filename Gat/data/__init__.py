@@ -7,12 +7,14 @@ from .base import ConcatTextSource
 from .base import CsvTextSource
 from .base import FromIterableTextSource
 from .base import load_splits
+from .base import Numerizer
 from .base import SentenceGraphDataset
 from .base import TextSource
 from .base import Vocab
 
 __all__ = [
     "tokenizers",
+    "Numerizer",
     "BasicVocab",
     "BertVocab",
     "Cacheable",

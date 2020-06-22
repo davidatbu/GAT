@@ -353,6 +353,7 @@ class Embedder(nn.Module, abc.ABC):  # type: ignore
            Args:
                vocab: Needed to access vocab.padding_tok_id, but not needed for "PositionalEmbedder".
         """
+        # TODO: Why do we need vocab here?
         super().__init__()
         if vocab is not None:
             self._vocab = vocab
