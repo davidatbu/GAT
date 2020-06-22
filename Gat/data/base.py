@@ -329,6 +329,14 @@ class Numerizer(abc.ABC):
         """The padding token id."""
         pass
 
+    @property
+    def padding_tok(self) -> str:
+        """The padding token id."""
+        # TODO: What about all the other special tokens in Vocab? Why don't they get a
+        # property that returns the token, not just the token id?
+        # It's not a problem for now, but it's uniuntuitive.
+        return "[PAD]"
+
 
 class Vocab(Numerizer, Cacheable):
     """A class to encapsulate preprocessing of text, and mapping tokens to ids.
