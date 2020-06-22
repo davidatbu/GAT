@@ -77,7 +77,7 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
                 That means, node features of the j-th node will affect the calculation
                 of the node features of the i-th node.
             node_features: (B, N, E)
-            value_edge_features and key_edge_features: (B, N_left, N_right, head_size)
+            value_edge_features and key_edge_features: (B, N_left, N_right, E)
                 edge_features[b, i, j, :] are the features of the directed edge from
                 the j-th node to the i-th node of the b-th graph in the batch.
 
@@ -381,7 +381,7 @@ class Embedder(nn.Module, abc.ABC):  # type: ignore
 class BertEmbedder(Embedder):
     _model_name: T.Literal["bert-base-uncased"] = "bert-base-uncased"
 
-    def __init__(self, vocab: data.BertVocab) -> None:
+    def __init__(self) -> None:
         """Initialize bert model and so on."""
         super().__init__()
         self._embedding_dim = 768

@@ -477,6 +477,10 @@ class BasicVocab(Vocab):
         )
 
     @property
+    def vocab_size(self) -> int:
+        return len(self._id2word)
+
+    @property
     def tokenizer(self) -> tokenizers.base.Tokenizer:
         return self._tokenizer
 
