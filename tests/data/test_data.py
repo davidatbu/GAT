@@ -30,7 +30,7 @@ def sst_dataset() -> SentenceGraphDataset:
 def test_svg(sst_dataset: SentenceGraphDataset) -> None:
     with open("example.svg", "w") as f:
         sentgraph = sst_dataset[2].lssentgraph[0]
-        svg_str = sst_dataset.sentgraph_to_svg(sentgraph)
+        svg_str = sst_dataset[0]
         f.write(svg_str)
     print(
         "Please check 'example.svg' to make sure the output produced for this "

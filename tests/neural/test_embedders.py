@@ -4,7 +4,6 @@ from __future__ import annotations
 import torch
 
 from Gat.neural import layers
-from Gat.utils import Device
 from tests.conftest import VocabSetup
 
 
@@ -48,7 +47,6 @@ def test_bert(
 
     lssent = ["pacification", "something"]
     lslstok_id = vocab_setup.bert_vocab.batch_tokenize_and_get_tok_ids(lssent)
-    breakpoint()
     tok_ids = vocab_setup.bert_vocab.prepare_for_embedder(
         lslstok_id, bert_embedder, device=device
     )

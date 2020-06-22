@@ -1,15 +1,5 @@
-"""Tests for layers.
-
-PyTest is useful. But it's not intuitive at all. Please check out how PyTest works
-first.
-"""
-from __future__ import annotations
-
-import tempfile
 import typing as T
-from pathlib import Path
 
-import pytest
 import torch
 from torch import nn
 from tqdm import tqdm  # type: ignore
@@ -18,12 +8,7 @@ from Gat.neural import layers
 from tests.conftest import GatSetup
 
 
-@pytest.fixture(scope="session")
-def temp_dir() -> Path:
-    return Path(tempfile.mkdtemp(prefix="GAT_test"))
-
-
-def test_best_num_heads(gat_setup: GatSetup, device: torch.device) -> None:
+def test_gat_layered_converge(gat_setup: GatSetup, device: torch.device) -> None:
 
     if not device == torch.device("cuda"):
         lsnum_heads = [4, 12]
@@ -47,23 +32,30 @@ def test_best_num_heads(gat_setup: GatSetup, device: torch.device) -> None:
             device=device,
         )
 
-        multihead_att = layers.GraphMultiHeadAttention(
-            embed_dim=gat_setup.all_config.model.embed_dim,
-            num_heads=num_heads,
-            edge_dropout_p=0.3,
+        model_config = gat_setup.all_config.model
+        gat_layered = layers.GATLayered(
+            num_heads=model_config.num_heads,
+            edge_dropout_p=model_config.num_heads,
+            rezero_or_residual=model_config.rezero_or_residual,
+            intermediate_dim=model_config.intermediate_dim,
+            num_layers=model_config.num_layers,
+            feat_dropout_p=model_config.feat_dropout_p,
+            lsnode_feature_embedder=lsnode_feature_embedder,
+            key_edge_feature_embedder=key_edge_feature_embedder,
         )
-        multihead_att.to(device)
+
+        gat_layered.to(device)
         adam = torch.optim.Adam(
             # Include key_edge_features in features to be optimized
             [key_edge_features]
-            + T.cast(T.List[torch.FloatTensor], list(multihead_att.parameters())),
+            + T.cast(T.List[torch.FloatTensor], list(gat_layered.parameters())),
             lr=1e-3,
         )
-        multihead_att.train()
+        gat_layered.train()
         for step in tqdm(range(1, n_steps + 1), desc=f"num_heads={num_heads}"):
-            after_self_att = multihead_att(
+            after_self_att = gat_layered(
                 adj=gat_setup.adj,
-                node_features=gat_setup.node_features,
+                node_ids=gat_setup.node_features,
                 key_edge_features=key_edge_features,
             )
             loss = crs_entrpy(

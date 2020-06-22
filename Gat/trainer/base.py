@@ -9,13 +9,13 @@ import sklearn.metrics as skmetrics
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import wandb  # type: ignore
 from sklearn.metrics import confusion_matrix
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter  # type: ignore
 from tqdm import tqdm
 
-import wandb  # type: ignore
 from ..config import base as config
 from ..data import base as data
 from ..neural import models
@@ -237,7 +237,7 @@ def main() -> None:
         intermediate_dim=300,
         feat_dropout_p=0.3,
         nclass=len(trainer.vocab._id2lbl),
-        nmid_layers=10,
+        num_layers=10,
         nedge_type=len(trainer.val_dataset.sent2graph.id2edge_type),
     )
 

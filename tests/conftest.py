@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 import torch
 
+from Gat import config
 from Gat import data
 from Gat.neural import layers
 
@@ -81,3 +82,73 @@ def reconciler_embedder(
         vocab_setup.bert_vocab, vocab_setup.basic_vocab, bert_embedder
     )
     return embedder
+
+
+class GatSetup(T.NamedTuple):
+    all_config: config.EverythingConfig[config.GATConfig]
+    seq_length: int
+    node_features: torch.Tensor
+    adj: torch.Tensor
+    node_labels: torch.Tensor
+
+
+@pytest.fixture
+def gat_setup(device: torch.device) -> GatSetup:
+
+    gat_config = config.GATConfig(
+        embed_dim=768,
+        vocab_size=99,
+        intermediate_dim=99,
+        cls_id=99,
+        num_layers=99,
+        num_heads=99,
+        nhid=99,
+        nedge_type=99,
+        embedder_type="bert",
+    )
+    trainer_config = config.TrainerConfig(
+        lr=1e-3,
+        epochs=99,
+        dataset_dir="99",
+        sent2graph_name="99",  # type: ignore
+        train_batch_size=3,
+        eval_batch_size=99,
+    )
+    all_config = config.EverythingConfig(model=gat_config, trainer=trainer_config)
+    seq_length = 13
+    node_features: torch.Tensor = torch.randn(  # type: ignore
+        all_config.trainer.train_batch_size,
+        seq_length,
+        all_config.model.embed_dim,
+        names=("B", "N", "E"),
+        device=device,
+    )
+
+    adj: torch.Tensor = torch.randn(  # type: ignore
+        all_config.trainer.train_batch_size,
+        seq_length,
+        seq_length,
+        names=("B", "N_left", "N_right"),
+        device=device,
+    ) > 1
+    adj.rename(None)[
+        :, range(seq_length), range(seq_length)
+    ] = True  # Make sure all the self loops are there
+
+    node_labels: torch.Tensor = torch.zeros(  # type: ignore
+        all_config.trainer.train_batch_size,
+        seq_length,
+        dtype=torch.long,
+        names=("B", "N"),
+        device=device,
+    )
+
+    node_labels.rename(None)[:, range(13)] = torch.tensor(range(13), device=device)
+
+    return GatSetup(
+        all_config=all_config,
+        seq_length=seq_length,
+        node_features=node_features,
+        adj=adj,
+        node_labels=node_labels,
+    )

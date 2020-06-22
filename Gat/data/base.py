@@ -1,4 +1,4 @@
-"""Basic NLP preprocessing. Also, caching preprocessing."""
+"""Basic NLP preprocessing. Also, caching."""
 from __future__ import annotations
 
 import abc
@@ -324,6 +324,21 @@ class Numerizer(abc.ABC):
         )
         return tok_ids.rename("B", "L")  # type: ignore
 
+    def strip_after_embedder(self, embs: torch.Tensor) -> torch.Tensor:
+        """Strip special tokens after passing through embedder.
+
+        Currently, we use this only to remove the [CLS] token from BERT. (We don't even
+        remove the [SEP] token with it).
+
+        Args:
+            embs: (B, L, E)
+
+        Returns:
+            embs: (B, L, E)
+        """
+        assert embs.names == ("B", "L", "E")  # type: ignore
+        return embs
+
     @abc.abstractproperty
     def padding_tok_id(self) -> int:
         """The padding token id."""
@@ -385,30 +400,6 @@ class Vocab(Numerizer, Cacheable):
     @abc.abstractproperty
     def labels(self) -> Labels:
         pass
-
-    @abc.abstractmethod
-    def prepare_for_embedder(
-        self,
-        lslstok_id: T.List[T.List[int]],
-        embedder: layers.Embedder,
-        device: torch.device = torch.device("cpu"),
-    ) -> torch.LongTensor:
-        pass
-
-    def strip_after_embedder(self, embs: torch.Tensor) -> torch.Tensor:
-        """Strip special tokens after passing through embedder.
-
-        Currently, we use this only to remove the [CLS] token from BERT. (We don't even
-        remove the [SEP] token with it).
-
-        Args:
-            embs: (B, L, E)
-
-        Returns:
-            embs: (B, L, E)
-        """
-        assert embs.names == ("B", "L", "E")  # type: ignore
-        return embs
 
 
 class BasicVocab(Vocab):
@@ -661,16 +652,27 @@ class BertVocab(Vocab):
         return embs[:, 1:]
 
 
-# Check here
-# https://mypy.readthedocs.io/en/stable/common_issues.html#using-classes-that-are-generic-in-stubs-but-not-at-runtime
-# for why.
-if T.TYPE_CHECKING:
-    BaseDataset = Dataset[GraphExample]
-else:
-    BaseDataset = Dataset
+_T = T.TypeVar("_T")
+_S = T.TypeVar("_S")
 
 
-class SentenceGraphDataset(BaseDataset, Cacheable):
+class NiceDataset(Dataset, T.Iterable[_T], abc.ABC):  # type: ignore
+    def map(self, func: T.Callable[[_T], _S]) -> NiceDataset[_S]:
+
+        orig_dataset = self
+
+        class NewDataset(NiceDataset[_S]):
+            def __getitem__(self, i: int) -> _S:
+                return func(orig_dataset[i])
+
+        return NewDataset()
+
+    def __iter__(self,) -> T.Iterator[_T]:
+        for i in range(len(self)):
+            yield self[i]
+
+
+class SentenceGraphDataset(NiceDataset[Graph], Cacheable):
     """A dataset that turns a TextSource into a dataset of `GraphExample`s.
 
     We handle here:
@@ -834,10 +836,6 @@ class SentenceGraphDataset(BaseDataset, Cacheable):
         lbl = self._vocab.labels.get_lbl(sent_graph_ex.lbl_id)
 
         return SentExample(lssent=lssent, lbl=lbl)
-
-    def __iter__(self,) -> T.Iterator[GraphExample]:
-        for i in range(len(self)):
-            yield self[i]
 
     @staticmethod
     def collate_fn(

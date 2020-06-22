@@ -95,7 +95,7 @@ class GATConfig(Config):
         "embedder_config",
         "intermediate_dim",
         "cls_id",
-        "nmid_layers",
+        "num_layers",
         "nhid",
         "num_heads",
         "final_conat",
@@ -116,7 +116,7 @@ class GATConfig(Config):
         embedder_type: TT.Literal["bert", "simple"],
         intermediate_dim: int,
         cls_id: int,
-        nmid_layers: int,
+        num_layers: int,
         nhid: int,
         num_heads: int,
         nedge_type: int,
@@ -136,7 +136,7 @@ class GATConfig(Config):
 
         self.intermediate_dim = intermediate_dim
         self.cls_id = cls_id
-        self.nmid_layers = nmid_layers
+        self.num_layers = num_layers
         self.nhid = nhid
         self.num_heads = num_heads
         self.nedge_type = nedge_type

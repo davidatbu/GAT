@@ -347,16 +347,11 @@ class FeedForwardWrapped(nn.Module):  # type: ignore
 class Embedder(nn.Module, abc.ABC):  # type: ignore
     """An abstract class."""
 
-    def __init__(self, vocab: T.Optional[data.Vocab] = None) -> None:
+    def __init__(self) -> None:
         """An abstract embedder to specify input and output. # noqa: 
-
-           Args:
-               vocab: Needed to access vocab.padding_tok_id, but not needed for "PositionalEmbedder".
         """
         # TODO: Why do we need vocab here?
         super().__init__()
-        if vocab is not None:
-            self._vocab = vocab
 
     @abc.abstractmethod
     def forward(self, tok_ids: torch.LongTensor) -> torch.Tensor:
@@ -388,7 +383,7 @@ class BertEmbedder(Embedder):
 
     def __init__(self, vocab: data.BertVocab) -> None:
         """Initialize bert model and so on."""
-        super().__init__(vocab=vocab)
+        super().__init__()
         self._embedding_dim = 768
 
         # Setup transformers BERT
@@ -450,18 +445,14 @@ class BertEmbedder(Embedder):
 
 class BasicEmbedder(Embedder):
     def __init__(
-        self,
-        num_embeddings: int,
-        embedding_dim: int,
-        padding_idx: int,
-        vocab: data.BasicVocab,
+        self, num_embeddings: int, embedding_dim: int, padding_idx: int,
     ) -> None:
         """Wrapper around `nn.Embedding` that conforms to `Embedder`."""
-        super().__init__(vocab=vocab)
+        super().__init__()
         self._embedder = nn.Embedding(
             num_embeddings=num_embeddings,
             embedding_dim=embedding_dim,
-            padding_idx=vocab.padding_tok_id,
+            padding_idx=padding_idx,
         )
         self._embedding_dim = embedding_dim
         self._padding_idx = padding_idx
@@ -736,15 +727,13 @@ class PositionalEmbedder(Embedder):
 class GATLayered(nn.Module):  # type: ignore
     def __init__(
         self,
-        embedding_dim: int,
         num_heads: int,
         edge_dropout_p: float,
         rezero_or_residual: T.Literal["rezero", "residual"],
         intermediate_dim: int,
         num_layers: int,
-        feat_dropout_p: bool,
-        node_feature_embedder: Embedder,
-        positional_embedder: Embedder,
+        feat_dropout_p: float,
+        lsnode_feature_embedder: T.List[Embedder],
         key_edge_feature_embedder: T.Optional[Embedder],
         value_edge_feature_embedder: T.Optional[Embedder],
     ):
@@ -752,17 +741,38 @@ class GATLayered(nn.Module):  # type: ignore
 
         Layers of GraphMultiHeadAttention and FeedForward, each wrapped by a rezero
         connection (or a residual and a layer norm).
+
+        Embedding dim is inferrred from the embedders passed.
+
+        Args:
+            num_heads: The number of heads for multi head attention.
+            edge_dropout_p: Probablity with which to drop out edges.
+            rezero_or_residual:
+            intermediate_dim: In the feedforward layers.
+            num_layers: Number of layers, where "FeedForward+SelfAttention" is one
+                layer.
+            feat_dropout_p:
+            lsnode_feature_embedder: A list of embedders to look up the node ids in.
+                Note that, for NLP tasks, this will most likely be a list of lenght two,
+                contianing the word embedder, and the positional embedder.
+            key_edge_feature_embedder: For incorporating edges into attention
+                calculation.
+                If set to None, won't incorporate edges into attention calculation.
+            value_edge_feature_embedder: For incorporating edges into node convolution.
+                Not yet implemented.
         """
-        assert node_feature_embedder.embedding_dim == embedding_dim
-        for embedder in [key_edge_feature_embedder, value_edge_feature_embedder]:
-            if embedder:
-                assert embedder.embedding_dim == embedding_dim
+        embedding_dim = lsnode_feature_embedder[0].embedding_dim
+        for embedder in (
+            lsnode_feature_embedder
+            + ([key_edge_feature_embedder] if key_edge_feature_embedder else [])
+            + ([value_edge_feature_embedder] if value_edge_feature_embedder else [])
+        ):
+            assert embedder.embedding_dim == embedding_dim
         super().__init__()
 
-        self._node_feature_embedder = node_feature_embedder
+        self._lsnode_feature_embedder = lsnode_feature_embedder
         self._key_edge_feature_embedder = key_edge_feature_embedder
         self._value_edge_feature_embedder = value_edge_feature_embedder
-        self._positional_embedder = positional_embedder
         self._lsmultihead_att_wrapper: T.Iterable[GraphMultiHeadAttentionWrapped] = nn.ModuleList(  # type: ignore # noqa:
             [
                 GraphMultiHeadAttentionWrapped(
@@ -787,10 +797,11 @@ class GATLayered(nn.Module):  # type: ignore
         )
 
     def forward(
-        self, word_ids: torch.LongTensor, adj: Tensor, edge_types: torch.LongTensor
+        self, node_ids: torch.LongTensor, adj: Tensor, edge_types: torch.LongTensor
     ) -> Tensor:
-        node_features = self._node_feature_embedder(word_ids)
-        node_features = node_features + self._positional_embedder(word_ids)
+        node_features = self._lsnode_feature_embedder[0](node_ids)
+        for embedder in self._lsnode_feature_embedder[1:]:
+            node_features = node_features + embedder(node_ids)
 
         if self._key_edge_feature_embedder:
             key_edge_features = self._key_edge_feature_embedder(edge_types)
@@ -807,6 +818,13 @@ class GATLayered(nn.Module):  # type: ignore
             node_features = feed_forward_wrapped(node_features=node_features)
 
         return node_features
+
+    def __call__(
+        self, word_ids: torch.LongTensor, adj: Tensor, edge_types: torch.LongTensor
+    ) -> Tensor:
+        return super.__call__(  # type: ignore
+            word_ids=word_ids, adj=adj, edge_types=edge_types
+        )
 
 
 if __name__ == "__main__":
