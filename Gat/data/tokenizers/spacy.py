@@ -9,10 +9,10 @@ from ..tokenizers import base
 class WrappedSpacyTokenizer(base.Tokenizer):
     """Wrapper around `nlp=spacy.load()` and `nlp(txt)`."""
 
-    def __init__(self) -> None:
+    def __init__(self, spacy_model_name: str = "en_core_web_sm") -> None:
         """Loads spacy model."""
         # We're doing only the base model for now
-        self._spacy_model_name = "en_core_web_sm"
+        self._spacy_model_name = spacy_model_name
         self._tokenizer = spacy.load(
             self._spacy_model_name, disable=["tagger", "parser", "ner"]
         )

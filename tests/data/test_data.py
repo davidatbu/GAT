@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 import torch
 
+from Gat import data
+from Gat import utils
 from Gat.data import BasicVocab
 from Gat.data import FromIterableTextSource
 from Gat.data import load_splits
@@ -24,18 +26,6 @@ def sst_dataset() -> SentenceGraphDataset:
     )
     dataset = datasets["train"]
     return dataset
-
-
-@pytest.mark.skip(reason="need to setup actual_data/")
-def test_svg(sst_dataset: SentenceGraphDataset) -> None:
-    with open("example.svg", "w") as f:
-        sentgraph = sst_dataset[2].lssentgraph[0]
-        svg_str = sst_dataset[0]
-        f.write(svg_str)
-    print(
-        "Please check 'example.svg' to make sure the output produced for this "
-        " sentgraph is correct."
-    )
 
 
 @pytest.fixture
@@ -351,7 +341,7 @@ def glove_vector_for_the() -> torch.Tensor:
 def basic_vocab() -> BasicVocab:
     txt_src = FromIterableTextSource(
         [
-            (["Love never fails.", "Love overcomes all things"], "yes"),
+            (["Love never fails.", "Love overcomes all things."], "yes"),
             (["Guard your heart.", "From his heart, living waters flow."], "no"),
             (["Always be on guard.", "Be watchful."], "yes"),
         ]
@@ -381,3 +371,56 @@ def test_vocab(basic_vocab: BasicVocab) -> None:
         "be",
     }
     assert set_id2word == expected_setid2word
+
+
+def test_draw_svg(sst_dataset: SentenceGraphDataset) -> None:
+    example = sst_dataset[0]
+
+    graph = example.lsgraph[0]
+
+    svg_content = graph.to_svg(
+        node_namer=lambda node_id: sst_dataset.vocab.get_toks([node_id])[0],
+        edge_namer=lambda edge_id: sst_dataset.id2edge_type[edge_id],
+    )
+
+    with open("graph.svg", "w") as f:
+        f.write(svg_content)
+
+
+def test_connect_to_cls(sst_dataset: SentenceGraphDataset) -> None:
+
+    dataset = data.ConnectToClsDataset(sst_dataset)
+
+    graph = dataset[0].lsgraph[0]
+    svg_content = graph.to_svg(
+        node_namer=lambda node_id: dataset.vocab.get_toks([node_id])[0],
+        edge_namer=lambda edge_id: dataset.id2edge_type[edge_id],
+    )
+    with open("graph_with_cls.svg", "w") as f:
+        f.write(svg_content)
+
+
+def test_undirected(sst_dataset: SentenceGraphDataset) -> None:
+
+    dataset = data.UndirectedDataset(sst_dataset)
+
+    graph = dataset[0].lsgraph[0]
+    svg_content = graph.to_svg(
+        node_namer=lambda node_id: dataset.vocab.get_toks([node_id])[0],
+        edge_namer=lambda edge_id: dataset.id2edge_type[edge_id],
+    )
+    with open("graph_undirected.svg", "w") as f:
+        f.write(svg_content)
+
+
+def test_undirected_connect_to_cls(sst_dataset: SentenceGraphDataset) -> None:
+
+    dataset = data.UndirectedDataset(data.ConnectToClsDataset(sst_dataset))
+
+    graph = dataset[0].lsgraph[0]
+    svg_content = graph.to_svg(
+        node_namer=lambda node_id: dataset.vocab.get_toks([node_id])[0],
+        edge_namer=lambda edge_id: dataset.id2edge_type[edge_id],
+    )
+    with open("graph_with_cls_undirected.svg", "w") as f:
+        f.write(svg_content)

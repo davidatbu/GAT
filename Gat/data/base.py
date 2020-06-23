@@ -10,8 +10,6 @@ from pathlib import Path
 
 import torch
 import typing_extensions as TT
-from Gat.data import tokenizers
-from Gat.neural import layers
 from torch.utils.data import Dataset
 from tqdm import tqdm  # type: ignore
 from typing_extensions import Counter
@@ -23,6 +21,8 @@ from ..utils import Graph
 from ..utils import GraphExample
 from ..utils import grouper
 from ..utils import SentExample
+from Gat.data import tokenizers
+from Gat.neural import layers
 
 
 logger = logging.getLogger(__name__)
@@ -618,6 +618,7 @@ class BertVocab(Vocab):
 
 _T = T.TypeVar("_T")
 _S = T.TypeVar("_S")
+_D = T.TypeVar("_D")
 
 
 class NiceDataset(Dataset, T.Iterable[_T], abc.ABC):  # type: ignore
@@ -640,7 +641,174 @@ class NiceDataset(Dataset, T.Iterable[_T], abc.ABC):  # type: ignore
             yield self[i]
 
 
-class SentenceGraphDataset(NiceDataset[GraphExample], Cacheable):
+class TransformedDataset(NiceDataset[_S], T.Generic[_T, _S]):
+    @abc.abstractmethod
+    def _transform(self, example: _T) -> _S:
+        pass
+
+    @abc.abstractproperty
+    def base_dataset(self) -> NiceDataset[_T]:
+        pass
+
+    def __getitem__(self, i: int) -> _S:
+        return self._transform(self.base_dataset[i])
+
+
+class BaseSentenceToGraphDataset(NiceDataset[GraphExample]):
+    @abc.abstractproperty
+    def sent2graph(self) -> SentenceToGraph:
+        pass
+
+    @abc.abstractproperty
+    def vocab(self) -> Vocab:
+        pass
+
+    @abc.abstractproperty
+    def id2edge_type(self) -> T.List[str]:
+        pass
+
+    @abc.abstractproperty
+    def edge_type2id(self) -> T.Dict[str, int]:
+        pass
+
+
+class UndirectedDataset(
+    TransformedDataset[GraphExample, GraphExample], BaseSentenceToGraphDataset
+):
+    _REVERSED = "_REVERSED"
+
+    def __init__(self, base_dataset: BaseSentenceToGraphDataset):
+        self._base_dataset = base_dataset
+        self._id2edge_type = self._base_dataset.id2edge_type + [
+            edge_type + self._REVERSED for edge_type in base_dataset.id2edge_type
+        ]
+        self._edge_type2id = {
+            edge_type: i for i, edge_type in enumerate(self._id2edge_type)
+        }
+
+    @property
+    def base_dataset(self) -> BaseSentenceToGraphDataset:
+        return self._base_dataset
+
+    def _transform(self, example: GraphExample) -> GraphExample:
+        new_example = GraphExample(
+            [self._graph_to_undirected(g) for g in example.lsgraph], example.lbl_id,
+        )
+        return new_example
+
+    def _graph_to_undirected(self, g: Graph) -> Graph:
+        new_graph = Graph(
+            lsedge=g.lsedge + [(n2, n1) for n1, n2 in g.lsedge],
+            lsedge_type=g.lsedge_type
+            + [
+                self.edge_type2id[self.id2edge_type[edge_id] + self._REVERSED]
+                for edge_id in g.lsedge_type
+            ],
+            lsimp_node=g.lsimp_node,
+            nodeid2wordid=g.nodeid2wordid,
+        )
+        return new_graph
+
+    @property
+    def sent2graph(self) -> SentenceToGraph:
+        # Technically not true, since we modify the graph in this class after getting
+        # it from this sent2graph
+        return self._base_dataset.sent2graph
+
+    @property
+    def vocab(self) -> Vocab:
+        return self._base_dataset.vocab
+
+    @property
+    def id2edge_type(self) -> T.List[str]:
+        return self._id2edge_type
+
+    @property
+    def edge_type2id(self) -> T.Dict[str, int]:
+        return self._edge_type2id
+
+
+class ConnectToClsDataset(
+    TransformedDataset[GraphExample, GraphExample], BaseSentenceToGraphDataset
+):
+    def __init__(self, base_dataset: SentenceGraphDataset):
+        cls_edge_name = "CLS_EDGE"
+        assert cls_edge_name not in base_dataset.id2edge_type
+        self._base_dataset = base_dataset
+        self._id2edge_type = self._base_dataset.id2edge_type + [cls_edge_name]
+        self._cls_edge_id = len(self._id2edge_type) - 1
+        self._edge_type2id = self._base_dataset.edge_type2id.copy()
+        self._edge_type2id.update({cls_edge_name: self._cls_edge_id})
+
+    @property
+    def base_dataset(self) -> SentenceGraphDataset:
+        return self._base_dataset
+
+    def _transform(self, example: GraphExample) -> GraphExample:
+        cls_tok_id = self.base_dataset.vocab.cls_tok_id
+        new_example = GraphExample(
+            [
+                self._connect_imp_nodes_to_new_node(g, cls_tok_id, self._cls_edge_id)
+                for g in example.lsgraph
+            ],
+            example.lbl_id,
+        )
+        return new_example
+
+    @property
+    def sent2graph(self) -> SentenceToGraph:
+        # Technically not true, since we modify the graph in this class after getting
+        # it from this sent2graph
+        return self._base_dataset.sent2graph
+
+    @property
+    def vocab(self) -> Vocab:
+        return self._base_dataset.vocab
+
+    @property
+    def id2edge_type(self) -> T.List[str]:
+        return self._id2edge_type
+
+    @property
+    def edge_type2id(self) -> T.Dict[str, int]:
+        return self._edge_type2id
+
+    @staticmethod
+    def _connect_imp_nodes_to_new_node(
+        g: Graph, new_node_global_id: int, new_edge_global_id: int
+    ) -> Graph:
+        """Connect g.lsimp_node to a new node, and make the new node the only imp node.
+
+        Used to connect "important nodes" (like dependency head nodes) to a CLS node.
+
+        The CLS node will be inserted at the beginning of the list of nodes.
+
+        For every node n in g.lsimp_node, adds edge (g.lsimp_node, new_node_global_id)
+        # TODO: This actually needs to be the other way around. But I need to change
+        this in a couple of other places. It's better to change it all at the same itme.
+        """
+
+        assert g.nodeid2wordid is not None
+        if new_node_global_id in g.nodeid2wordid:
+            raise Exception(f"new node to be added in graph already exists.")
+
+        new_node_local_id = 0
+
+        # Inserting CLS at the beginning
+        lsedge_shifted = [(n1 + 1, n2 + 1) for n1, n2 in g.lsedge]
+        lsimp_node_shifted = [n + 1 for n in g.lsimp_node]
+
+        new_graph = Graph(
+            lsedge=[(imp_node, new_node_local_id) for imp_node in lsimp_node_shifted]
+            + lsedge_shifted,
+            lsedge_type=[new_edge_global_id] * len(lsimp_node_shifted) + g.lsedge_type,
+            lsimp_node=[new_node_local_id],
+            nodeid2wordid=[new_node_global_id] + g.nodeid2wordid,
+        )
+        return new_graph
+
+
+class SentenceGraphDataset(BaseSentenceToGraphDataset, Cacheable):
     """A dataset that turns a TextSource into a dataset of `GraphExample`s.
 
     We handle here:
@@ -678,6 +846,22 @@ class SentenceGraphDataset(NiceDataset[GraphExample], Cacheable):
         self._processing_batch_size = processing_batch_size
 
         Cacheable.__init__(self, cache_dir=cache_dir, ignore_cache=ignore_cache)
+
+    @property
+    def sent2graph(self) -> SentenceToGraph:
+        return self._sent2graph
+
+    @property
+    def vocab(self) -> Vocab:
+        return self._vocab
+
+    @property
+    def id2edge_type(self) -> T.List[str]:
+        return self._sent2graph.id2edge_type
+
+    @property
+    def edge_type2id(self) -> T.Dict[str, int]:
+        return self._sent2graph.edge_type2id
 
     @property
     def _cached_attrs(self) -> T.List[str]:
@@ -761,7 +945,7 @@ class SentenceGraphDataset(NiceDataset[GraphExample], Cacheable):
             map(list, zip(*lsper_column_sentgraph))
         )
         res = [
-            GraphExample(lssentgraph=lssentgraph, lbl_id=lbl_id)
+            GraphExample(lsgraph=lssentgraph, lbl_id=lbl_id)
             for lssentgraph, lbl_id in zip(lslssentgraph, lslbl_id)
         ]
         return res
@@ -781,7 +965,7 @@ class SentenceGraphDataset(NiceDataset[GraphExample], Cacheable):
             )
             lssentgraph.append(sentgraph)
         lbl_id = self._vocab.labels.get_lbl_id(lbl)
-        sentgraph_ex = GraphExample(lssentgraph=lssentgraph, lbl_id=lbl_id)
+        sentgraph_ex = GraphExample(lsgraph=lssentgraph, lbl_id=lbl_id)
         return sentgraph_ex
 
     def __len__(self) -> int:
@@ -792,25 +976,6 @@ class SentenceGraphDataset(NiceDataset[GraphExample], Cacheable):
             raise IndexError(f"{idx} is >= {len(self)}")
 
         return self._lssentgraph_ex[idx]
-
-    def sentgraph_ex_to_sent_ex(self, sent_graph_ex: GraphExample) -> SentExample:
-        lslsword_id = [
-            sentgraph.nodeid2wordid for sentgraph in sent_graph_ex.lssentgraph
-        ]
-        lssent: T.List[str] = []
-        for lsword_id in lslsword_id:
-            assert lsword_id is not None
-            lssent.append(" ".join(self._vocab.get_toks(lsword_id)))
-        lbl = self._vocab.labels.get_lbl(sent_graph_ex.lbl_id)
-
-        return SentExample(lssent=lssent, lbl=lbl)
-
-    @staticmethod
-    def collate_fn(
-        batch: T.List[GraphExample],
-    ) -> T.Tuple[T.List[T.List[Graph]], T.List[int]]:
-        X, y = zip(*batch)
-        return list(X), list(y)
 
 
 SENT2GRAPHS: T.Dict[str, T.Type[SentenceToGraph]] = {
@@ -847,7 +1012,7 @@ def load_splits(
         txt_src=txt_srcs["train"],
         cache_dir=dataset_dir,
         unk_thres=unk_thres,
-        tokenizer=tokenizers.Tokenizer(),  # type: ignore # TODO
+        tokenizer=tokenizers.spacy.WrappedSpacyTokenizer(),
     )
 
     cls_sent2graph = SENT2GRAPHS[sent2graph_name]

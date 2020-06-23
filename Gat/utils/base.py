@@ -46,7 +46,7 @@ class Graph(T.NamedTuple):
 
         return hash(tuple(tuple(ls) for ls in to_hash))
 
-    def sentgraph_to_svg(
+    def to_svg(
         self,
         node_namer: T.Callable[[int], str] = lambda i: str(i),
         edge_namer: T.Callable[[int], str] = lambda i: str(i),
@@ -71,17 +71,24 @@ class Graph(T.NamedTuple):
         assert self.nodeid2wordid is not None
 
         # NetworkX format
-        lsnode_name: T.List[T.Tuple[int, T.Dict[str, str]]] = [
+        lsnode_id_and_nx_dict: T.List[T.Tuple[int, T.Dict[str, str]]] = [
             (node_id, {"label": quote(name)})
             for node_id, name in enumerate(map(node_namer, self.nodeid2wordid))
         ]
+
+        # Mark the "important nodes"
+        print("about to check for head nodes.")
+        for node_id, nx_dict in lsnode_id_and_nx_dict:
+            if node_id in self.lsimp_node:
+                print("found head node.")
+                nx_dict["label"] += ": IMP node"
 
         # Edges in nx format
         lsedge_name: T.List[T.Tuple[int, int, T.Dict[str, str]]] = [
             (n1, n2, {"label": quote(edge_namer(edge_id))})
             for (n1, n2), edge_id in zip(self.lsedge, self.lsedge_type)
         ]
-        g.add_nodes_from(lsnode_name)
+        g.add_nodes_from(lsnode_id_and_nx_dict)
         g.add_edges_from(lsedge_name)
         p = nx.drawing.nx_pydot.to_pydot(g)
         return p.create_svg().decode()  # type: ignore
@@ -97,7 +104,7 @@ class SentExample(T.NamedTuple):
 class GraphExample(T.NamedTuple):
     """A list of graphs and a label."""
 
-    lssentgraph: T.List[Graph]
+    lsgraph: T.List[Graph]
     lbl_id: int
 
 

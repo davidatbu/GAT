@@ -58,7 +58,7 @@ class LitGatForSequenceClassification(LightningModule):
         )
         self._datasets = datasets
         self._txt_srcs = txt_srcs
-        self._word_vocab = word_vocab
+        self._word_vocab: data.Vocab = word_vocab
 
         model_config = self._all_config.model
         if model_config.node_embedding_type == "pooled_bert":
@@ -75,7 +75,14 @@ class LitGatForSequenceClassification(LightningModule):
 
     def _collate_fn(self, lsgraph_example: T.List[utils.GraphExample]) -> OneBatch:
         """Turn `GraphExample` into a series of `torch.Tensor`s  """
-        pass
+        lslsgraph: T.List[T.List[utils.Graph]]
+        lslbl_id: T.List[int]
+        lslsgraph, lslbl_id = map(list, zip(*lsgraph_example))  # type: ignore
+
+        lslsedge: T.List[T.List[T.Tuple[int, int]]]
+        lslsedge_type: T.List[T.List[int]]
+        lslsimp_node: T.List[T.List[int]]
+        lsnodeid2wordid: T.List[T.List[int]]
 
     def train_dataloader(self) -> DataLoader[utils.GraphExample]:
         res = DataLoader(

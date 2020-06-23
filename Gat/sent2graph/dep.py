@@ -6,12 +6,13 @@ from spacy.tokens import Doc  # type: ignore
 
 from ..utils.base import EdgeList
 from ..utils.base import EdgeTypeList
-from ..utils.base import NodeList
 from ..utils.base import Graph
+from ..utils.base import NodeList
 from .base import SentenceToGraph
 
-# https://github.com/explosion/spacy-models/releases/tag/en_core_web_md-2.2.0
+# https://github.com/explosion/spacy-models/releases/tag/en_core_web_sm-2.2.5
 _id2edge_type = [
+    "ROOT",
     "acl",
     "acomp",
     "advcl",
@@ -58,11 +59,12 @@ _id2edge_type = [
     "xcomp",
 ]
 
+
 _edge_type2id = {edge_type: id_ for id_, edge_type in enumerate(_id2edge_type)}
 
 
 class DepSentenceToGraph(SentenceToGraph):
-    def __init__(self, spacy_mdl: str = "en_core_web_md") -> None:
+    def __init__(self, spacy_mdl: str = "en_core_web_sm") -> None:
         self._spacy_mdl = spacy_mdl
         self._nlp = spacy.load(self._spacy_mdl, disable=["tagger", "ner"])
 
