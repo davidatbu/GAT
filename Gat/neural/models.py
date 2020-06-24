@@ -46,7 +46,9 @@ class GATForSequenceClassification(nn.Module):  # type: ignore
             )
 
         setattr(word_embedder, "debug_name", "word_embedder")
-        self._word_embedder = word_embedder
+        # If we don't do this, our TensorBoard graph won't look nice
+        # because we word embedder to GatLayered as well
+        self._word_embedder_container = [word_embedder]
 
         if config.use_edge_features:
             head_size = config.embedding_dim // config.gat_layered.num_heads
@@ -80,22 +82,26 @@ class GATForSequenceClassification(nn.Module):  # type: ignore
     @property
     def word_embedder(self) -> layers.Embedder:
         """Used in train.py's LitGatForSequenceClassification._collate_fn"""
-        return self._word_embedder
+        return self._word_embedder_container[0]
 
     def forward(
         self,
-        word_ids: torch.LongTensor,
-        batched_adj: torch.BoolTensor,
-        edge_types: T.Optional[torch.LongTensor],
+        word_ids: torch.Tensor,
+        batched_adj: torch.Tensor,
+        edge_types: T.Optional[torch.Tensor],
     ) -> Tensor:
-
-        word_ids.rename_("B", "L")
-        batched_adj.rename_("B", "L_left", "L_right")
-        edge_types.rename_("B", "L_left", "L_right")
+        """
+        
+        Args:
+            word_ids: (B, L)
+            batched_adj: (B, L, L)
+            edge_types: (B, L, L)
+        """
 
         h = self._gat_layered(
             node_ids=word_ids, batched_adj=batched_adj, edge_types=edge_types
         )
+        # (B, L, E)
 
         assert torch.all(
             word_ids[:, 0] == torch.tensor(self._cls_tok_id, dtype=torch.long)
@@ -109,9 +115,9 @@ class GATForSequenceClassification(nn.Module):  # type: ignore
 
     def __call__(
         self,
-        word_ids: torch.LongTensor,
-        batched_adj: torch.BoolTensor,
-        edge_types: T.Optional[torch.LongTensor],
+        word_ids: torch.Tensor,
+        batched_adj: torch.Tensor,
+        edge_types: T.Optional[torch.Tensor],
     ) -> Tensor:
 
         return super().__call__(word_ids, batched_adj, edge_types)  # type: ignore

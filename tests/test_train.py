@@ -3,16 +3,16 @@ import unittest.mock
 import warnings
 
 import torch
-from pytorch_lightning.logging import TensorBoardLogger
-from pytorch_lightning.trainer import Trainer
+from pytorch_lightning.logging import TensorBoardLogger  # type: ignore
+from pytorch_lightning.trainer import Trainer  # type: ignore
 from torch import nn
 
 import train
-from .common import EverythingConfigMixin
 from Gat import config
 from Gat import testing_utils
 from Gat import utils
 from Gat.neural import layers
+from tests.common import EverythingConfigMixin
 
 warnings.simplefilter("ignore")
 
@@ -34,6 +34,17 @@ class LitGatForSequenceClassificationMixin(EverythingConfigMixin):
     def _do_training(self) -> None:
         trainer = Trainer(max_epochs=1, logger=TensorBoardLogger("./tb_logs"))
         trainer.fit(self._lit_model)
+
+
+class TestItRuns(LitGatForSequenceClassificationMixin, unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+
+    def test_it(self) -> None:
+        self._do_training()
+
+    def tearDown(self) -> None:
+        super().tearDown()
 
 
 @unittest.skip("not sure if I know which things should be updated yet, cuz of rezero.")
@@ -118,3 +129,7 @@ class TestBackprop(LitGatForSequenceClassificationMixin, unittest.TestCase):
             self.assertTrue(
                 (used_before_training != used_after_training).rename(None).any()
             )
+
+
+if __name__ == "__main__":
+    unittest.main()

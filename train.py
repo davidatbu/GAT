@@ -36,10 +36,10 @@ seed_everything(0)
 
 
 class OneBatch(T.NamedTuple):
-    word_ids: torch.LongTensor
-    batched_adj: torch.BoolTensor
-    edge_types: torch.LongTensor
-    target: torch.LongTensor
+    word_ids: torch.Tensor
+    batched_adj: torch.Tensor
+    edge_types: torch.Tensor
+    target: torch.Tensor
 
 
 class LitGatForSequenceClassification(LightningModule):
@@ -112,36 +112,28 @@ class LitGatForSequenceClassification(LightningModule):
         lslsedge, lslsedge_type, lslsimp_node, lsnodeid2wordid = map(  # type: ignore
             list, zip(*lsgraph)
         )
-        word_ids: torch.LongTensor = self._word_vocab.prepare_for_embedder(
+        word_ids: torch.Tensor = self._word_vocab.prepare_for_embedder(
             lsnodeid2wordid, self._gat_model.word_embedder
         )
+        # (B, L)
+
+        B, L = word_ids.size()
         # Build the adjacnecy matrices
-        batched_adj: torch.BoolTensor = torch.zeros(  # type: ignore
-            word_ids.size("B"),
-            word_ids.size("L"),
-            word_ids.size("L"),
-            names=("B", "L_left", "L_right"),
-            dtype=torch.bool,
-        )
+        batched_adj = torch.zeros([B, L, L], dtype=torch.bool)
 
         # Build the edge types
-        edge_types: torch.LongTensor = torch.zeros(  # type: ignore
-            word_ids.size("B"),
-            word_ids.size("L"),
-            word_ids.size("L"),
-            # names=("B", "L_left", "L_right"),
-            dtype=torch.long,
+        edge_types: torch.Tensor = torch.zeros(
+            [B, L, L], dtype=torch.long,
         )
         for batch_num, (lsedge, lsedge_type) in enumerate(zip(lslsedge, lslsedge_type)):
             indexing_arrs: T.Tuple[T.List[int], T.List[int]] = tuple(zip(*lsedge))  # type: ignore
-            batched_adj.rename(None)[batch_num][indexing_arrs[0], indexing_arrs[1]] = 1
-            edge_types.rename(None)[batch_num][
-                indexing_arrs[0], indexing_arrs[1]
-            ] = torch.tensor(lsedge_type, dtype=torch.long)
+            batched_adj[batch_num][indexing_arrs[0], indexing_arrs[1]] = 1
+            edge_types[batch_num][indexing_arrs[0], indexing_arrs[1]] = torch.tensor(
+                lsedge_type, dtype=torch.long
+            )
 
-        target: torch.LongTensor = torch.tensor(  # type: ignore
-            lslbl_id, names=("B",)
-        )
+        target = torch.tensor(lslbl_id, dtype=torch.long)
+        # (B,)
 
         return OneBatch(
             word_ids=word_ids,
@@ -150,7 +142,7 @@ class LitGatForSequenceClassification(LightningModule):
             target=target,
         )
 
-    def train_dataloader(self) -> DataLoader[utils.GraphExample]:
+    def train_dataloader(self) -> DataLoader[OneBatch]:
         res = DataLoader(
             dataset=self._datasets["train"],
             collate_fn=self._collate_fn,
@@ -178,18 +170,18 @@ class LitGatForSequenceClassification(LightningModule):
 
     def forward(  # type: ignore
         self,
-        word_ids: torch.LongTensor,
-        batched_adj: torch.BoolTensor,
-        edge_types: torch.LongTensor,
+        word_ids: torch.Tensor,
+        batched_adj: torch.Tensor,
+        edge_types: torch.Tensor,
     ) -> torch.Tensor:
         logits = self._gat_model(word_ids, batched_adj, edge_types)
         return logits
 
     def __call__(
         self,
-        word_ids: torch.LongTensor,
-        batched_adj: torch.BoolTensor,
-        edge_types: torch.LongTensor,
+        word_ids: torch.Tensor,
+        batched_adj: torch.Tensor,
+        edge_types: torch.Tensor,
     ) -> torch.Tensor:
         return super().__call__(word_ids, batched_adj, edge_types)  # type: ignore
 
@@ -197,7 +189,7 @@ class LitGatForSequenceClassification(LightningModule):
         self, batch: OneBatch, batch_idx: int
     ) -> T.Dict[str, T.Union[Tensor, T.Dict[str, Tensor]]]:
         logits = self(batch.word_ids, batch.batched_adj, batch.edge_types)
-        loss = self._crs_entrpy(logits.rename(None), batch.target.rename(None))
+        loss = self._crs_entrpy(logits, batch.target)
 
         return {
             "loss": loss,
@@ -210,9 +202,16 @@ class LitGatForSequenceClassification(LightningModule):
         return {"logits": logits, "target": batch.target}
 
     def on_train_start(self) -> None:
-        one_example = next(iter(self.train_dataloader()))
+        one_example: OneBatch = next(iter(self.train_dataloader()))
         if hasattr(self.logger.experiment, "add_graph"):
-            self.logger.experiment.add_graph(self._gat_model, one_example)
+            self.logger.experiment.add_graph(
+                self._gat_model,
+                (
+                    one_example.word_ids,
+                    one_example.batched_adj,
+                    one_example.edge_types,
+                ),
+            )
 
     def validation_epoch_end(
         self,
@@ -230,9 +229,12 @@ class LitGatForSequenceClassification(LightningModule):
         for i, lsoutput in enumerate(lslsoutput):
             val_dataset_name = self._val_dataset_names[i]
             all_logits = torch.cat([output["logits"] for output in lsoutput])
+            # (B, C)
             all_target = torch.cat([output["target"] for output in lsoutput])
+            # (B,)
 
-            all_preds = all_logits.rename(None).argmax(dim=1)
+            all_preds = all_logits.argmax(dim=1)
+            # (B,)
             acc = accuracy(all_preds, all_target)
             res.update({f"{val_dataset_name}_acc": acc})
 
