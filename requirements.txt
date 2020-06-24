@@ -1,14 +1,13 @@
 --find-links https://download.pytorch.org/whl/torch_stable.html
-networkx==2.4
-scikit-learn==0.22.2.post1
-tensorboard==2.2.1
-torch==1.5.0+cu101
-pytorch-lightning==0.8.1
-torchvision==0.6.0+cu101
-tqdm==4.45.0
-transformers==2.9.1
-wandb==0.8.36
-# git+git://github.com/allenai/allennlp-models.git@tags/v1.0.0rc5#egg=allennlp-models_1.0.0rc5
+
 allennlp-models==1.0.0rc5
-plotly
-beautifulsoup4
+beautifulsoup4==4.9.1
+https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-2.3.0/en_core_web_sm-2.2.0.tar.gz#egg=en_core_web_sm==2.3.0
+matplotlib==3.2.1
+networkx==2.4
+plotly==4.8.1
+pydot==1.4.1
+pytorch-lightning==0.8.1
+transformers==1.1.0
+torchvision==0.6.0+cu101
+wandb==0.8.36

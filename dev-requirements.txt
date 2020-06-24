@@ -1,6 +1,5 @@
 black==19.10b0
-pytest==5.4.2
-flake8==3.8.1
+reorder-python-imports==2.3.1
+pip-chill==1.0.0
+ipdb==0.13.2
 mypy==0.770
-flake8-docstrings
-
