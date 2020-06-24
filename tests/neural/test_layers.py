@@ -25,40 +25,41 @@ class TestGraphMultiHeadAttention(
     def setUp(self) -> None:
         super().setUp()
         self._seq_length = 6
-        self._node_features = torch.randn(  # type: ignore
+        self._node_features = torch.randn(
             [
                 self._all_config.trainer.train_batch_size,
                 self._seq_length,
                 self._all_config.model.embedding_dim,
             ],
-            names=("B", "L", "E"),
             device=self._device,
         )
+        # (B, L, E)
         self._batched_adj: torch.BoolTensor = (
-            torch.randn(  # type: ignore
+            torch.randn(
                 [
                     self._all_config.trainer.train_batch_size,
                     self._seq_length,
                     self._seq_length,
                 ],
-                names=("B", "L_left", "L_right"),
                 device=self._device,
             )
             > 1
         )
+        # (B, L, L)
 
-        self._batched_adj.rename(None)[
+        self._batched_adj[
             :, range(self._seq_length), range(self._seq_length)
         ] = True  # Make sure all the self loops are there
-        self._node_labels: torch.LongTensor = torch.zeros(  # type: ignore
+        self._node_labels = torch.zeros(
             [self._all_config.trainer.train_batch_size, self._seq_length],
             dtype=torch.long,
-            names=("B", "L"),
         )
+        # (B, L)
 
-        self._node_labels.rename(None)[:, range(self._seq_length)] = torch.tensor(
+        self._node_labels[:, range(self._seq_length)] = torch.tensor(
             range(self._seq_length)
         )
+        # (B, L)
 
     def test_best_num_heads(self) -> None:
 
@@ -81,11 +82,11 @@ class TestGraphMultiHeadAttention(
                     self._seq_length,
                     head_size,
                 ],
-                names=("B", "L_left", "L_right", "head_size"),
                 requires_grad=True,
                 device=self._device,
                 dtype=torch.float,
             )
+            # (B, L, L, head_size)
 
             multihead_att = layers.GraphMultiHeadAttention(
                 embed_dim=self._all_config.model.embedding_dim,
@@ -106,11 +107,14 @@ class TestGraphMultiHeadAttention(
                     node_features=self._node_features,
                     key_edge_features=key_edge_features,
                 )
+                # (B, L, E)
+                B, L, E = after_self_att.size()
                 loss = crs_entrpy(
-                    after_self_att.flatten(["B", "L"], "BL").rename(None),
-                    self._node_labels.flatten(["B", "L"], "BL").rename(None),
+                    after_self_att.view(B * L, E), self._node_labels.view(B * L)
                 )
-                preds = after_self_att.rename(None).argmax(dim=-1)
+                # (,)
+                preds = after_self_att.argmax(dim=-1)
+                # (B, L)
                 if torch.all(torch.eq(preds, self._node_labels)):
                     steps_to_converge_for_num_heads[num_heads] = step
                     break

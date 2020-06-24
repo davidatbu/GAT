@@ -35,7 +35,7 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
         """Multihead attention that supports an arbitrary graph.
 
         Note that nn.MultiHeadAttention(the PyTorch native):
-            1. doesn't support graph like inputs.  Ie, it assumes
+            1. doesn't support graph like inputs.  ie, it assumes
                every node/token is connected with every other token.
             2. Has no way to take edge features into attention calculation,
                or calculating node features.
@@ -55,23 +55,23 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
         # Take advantage of PyTorch's state of the art initialization techniques
         # by taking weights from a linear layer
 
-        self.softmax = nn.Softmax(
-            dim="L_right"  # type: ignore
-        )  # It will be softmaxing (B, L_left, L_right)
+        self.softmax = nn.Softmax(dim=-1)
+        # target: (B, L_left, L_right)
         self.dropout = nn.Dropout(p=edge_dropout_p)
+        self.neg_infinity: torch.Tensor
         self.register_buffer("neg_infinity", torch.tensor(-float("inf")))
 
     def forward(
         self,
         node_features: torch.Tensor,
-        batched_adj: torch.BoolTensor,
+        batched_adj: torch.Tensor,
         key_edge_features: T.Optional[torch.Tensor] = None,
         value_edge_features: T.Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """.
 
         Args:
-            batched_adj: (B, L_left, L_right)
+            batched_adj: (B, L, L)
                 batched_adj[b, i, j] means there's a directed edge from the i-th node to
                 the j-th node of the b-th graph in the batch.
 
@@ -88,23 +88,26 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
         if value_edge_features is not None:
             raise Exception("passing in value_edge_features is not yet implemented")
 
-        # Refine names because linear layer erases the E dim name
-        Q: torch.FloatTensor = self.W_query(node_features).refine_names(..., "E")  # type: ignore # noqa:
-        K: torch.FloatTensor = self.W_key(node_features).refine_names(..., "E")  # type: ignore # noqa:
-        V: torch.FloatTensor = self.W_value(node_features).refine_names(..., "E")  # type: ignore # noqa:
+        Q = self.W_query(node_features)
+        # (B, L, E)
+        K = self.W_key(node_features)
+        # (B, L, E)
+        V = self.W_value(node_features)
+        # (B, L, E)
 
         # Reshape using self.num_heads to compute probabilities headwize
-        # Rename dim names to avoid N being duplicated in att_scores
         transed_Q = self._transpose_for_scores(Q)
+        # (B, num_heads, L, head_size)
         transed_K = self._transpose_for_scores(K)
+        # (B, num_heads, L, head_size)
         transed_V = self._transpose_for_scores(V)
+        # (B, num_heads, L, head_size)
 
         # Compute node attention probability
-        att_scores = torch.matmul(
-            transed_Q.rename(L="L_left"),  # type: ignore
-            transed_K.rename(L="L_right").transpose("L_right", "head_size"),  # type: ignore # noqa:
-        )
-        # att_scores: (B, head_size, L_left, L_right)
+        transed_K_for_matmul = transed_K.transpose(-2, -1)
+        # (B, num_heads, head_size, L)
+        att_scores = torch.matmul(transed_Q, transed_K_for_matmul)
+        # (B, num_heads, L, L)
 
         if key_edge_features is not None:
             # Einstein notation used here .
@@ -126,62 +129,54 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
                 "bhnd,bnmd->bhnm",
                 transed_Q.rename(None),
                 key_edge_features.rename(None),
-            ).rename("B", "num_heads", "L_left", "L_right")
+            )
+            # (B, num_heads, L, L)
 
             att_scores = att_scores + edge_att_scores
 
         att_scores /= math.sqrt(self.embed_dim)
         # Prepare  batched_adj to broadT.cast to head size
-        batched_adj = T.cast(
-            torch.BoolTensor,
-            batched_adj.align_to("B", "num_heads", "L_left", "L_right").expand(  # type: ignore
-                node_features.size("B"),
-                self.num_heads,
-                node_features.size("L"),
-                node_features.size("L"),
-            ),
-        )
+        B, L, L = batched_adj.size()
+        batched_adj = batched_adj.unsqueeze(1).expand(B, self.num_heads, L, L)
+        # (B, num_heads, L, L)
+
         # Inject the graph structure by setting non existent edges' scores to
         # negative infinity
-        att_scores_names = T.cast(
-            T.Optional[T.List[T.Optional[str]]], att_scores.names
-        )  # I'm not sure why mypy needs this cast
-        att_scores_after_graph_injected = torch.where(  # type: ignore
-            batched_adj.rename(None), att_scores.rename(None), self.neg_infinity  # type: ignore
-        ).rename(*att_scores_names)
+        att_scores_after_graph_injected = torch.where(
+            batched_adj, att_scores, self.neg_infinity
+        )
+        # (B, num_heads, L, L)
         att_probs = self.softmax(att_scores_after_graph_injected)
-
-        # Named tensors are great! Except that they are not fully supported.
-        att_probs_names = att_probs.names
-        att_probs.rename_(None)
+        # (B, num_heads, L, L)
 
         # If a node was not connected to any edge, we'll
         # have some nans in here, set the nans to zero
         att_probs = torch.where(att_probs != att_probs, torch.tensor(0.0), att_probs)
-
-        if torch.isnan(att_probs).all(dim=2).any():
-            breakpoint()
-        # att_probs: (B, head_size, L_left, L_right)
+        # (B, num_heads, L, L)
 
         # Apply dropout
-        att_probs = self.dropout(att_probs).rename(*att_probs_names)  # type: ignore
+        att_probs = self.dropout(att_probs)
+        # (B, num_heads, L, L)
 
-        # Again combine values using attention
+        # Do convolution using attention
         new_node_features = torch.matmul(att_probs, transed_V)
-        new_node_features = new_node_features.rename(L_left="L")  # type: ignore
+        # (B, num_heads, L, head_size)
 
         if value_edge_features:
-            # Not yet implemented
-            pass
+            raise NotImplementedError()
 
         # Reshape to concatenate the heads again
-        new_node_features = new_node_features.transpose("num_heads", "L")
-        # new_node_features: (B, N, num_heads, head_size)
-        new_node_features = new_node_features.flatten(("num_heads", "head_size"), "E")  # type: ignore # noqa:
+        new_node_features = new_node_features.transpose(1, 2)
+        # (B, L, num_heads, head_size)
+
+        B, L, _, _ = new_node_features.size()
+        E = self.embed_dim
+        new_node_features = new_node_features.reshape(B, L, E)
         # new_node_features: (B, N, E)
 
         # Pass them through W_o finally
-        new_node_features = self.W_out(new_node_features).refine_names(..., "E")  # type: ignore # noqa:
+        new_node_features = self.W_out(new_node_features)
+        # new_node_features: (B, N, E)
 
         return new_node_features
 
@@ -200,13 +195,23 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
             value_edge_features=value_edge_features,
         )
 
-    def _transpose_for_scores(self, W: torch.FloatTensor) -> torch.FloatTensor:
-        W = W.unflatten(  # type: ignore
-            "E", [("num_heads", self.num_heads), ("head_size", self.head_size)]
-        )
+    def _transpose_for_scores(self, W: torch.Tensor) -> torch.Tensor:
+        """
 
-        # Returning  (B, num_heads, N, head_size)
-        return W.transpose("L", "num_heads")  # type: ignore
+        Args:
+            W: (B, L, E)
+
+        Returns:
+            W: (B, self.num_heads, L, self.head_size)
+        """
+
+        B, L, E = W.size()
+        W = W.view(B, L, self.num_heads, self.head_size)
+        # (B, L, num_heads, head_size)
+
+        transposed = W.transpose(1, 2)
+        # (B, num_heads, L, head_size)
+        return transposed
 
 
 class Rezero(nn.Module):  # type: ignore
