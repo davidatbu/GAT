@@ -66,13 +66,15 @@ class TestVocab(testing_utils.TempDirMixin, unittest.TestCase):
         lssent = ["pacification", "something"]
         lslstok_id = self._bert_vocab.batch_tokenize_and_get_tok_ids(lssent)
         tok_ids = self._bert_vocab.prepare_for_embedder(lslstok_id, self._bert_embedder)
+        # (B, L)
         embs = self._bert_embedder(tok_ids)
+        # (B, L, E)
         embs = self._bert_vocab.strip_after_embedder(embs)
+        # (B, L, E)
 
         max_seq_len = max(map(len, lslstok_id))
-        assert embs.size("L") == max_seq_len + 1
-        # The +1 for the [SEP] token, not removed
-        # by strip_after_embedder
+        assert embs.size(1) == max_seq_len + 1
+        # The +1 for the [SEP] token, not removed by strip_after_embedder.
 
     def test_reconciler(self,) -> None:
         lstxt = ["pacification"]  # Bert tokenization and basic tokeinzation different
@@ -90,14 +92,9 @@ class TestVocab(testing_utils.TempDirMixin, unittest.TestCase):
         with_rec = self._reconciler_embedder(basic_tok_ids)
         with_rec = self._basic_vocab.strip_after_embedder(with_rec)
 
-        without_rec_pooled = (
-            without_rec[:, :-1]  # The [SEP] token is not yet removed
-            .mean(dim="L")  # type: ignore
-            .align_to("B", "L", "E")
-        )
-        torch.testing.assert_allclose(  # type: ignore
-            without_rec_pooled.rename(None), with_rec.rename(None)
-        )
+        without_rec_pooled = without_rec[:, :-1].mean(dim=1, keepdim=True)
+        # (B, 1, E)
+        torch.testing.assert_allclose(without_rec_pooled, with_rec)  # type: ignore
 
 
 if __name__ == "__main__":

@@ -296,7 +296,7 @@ class Numerizer(abc.ABC):
         lslstok_id: T.List[T.List[int]],
         embedder: layers.Embedder,
         device: torch.device = torch.device("cpu"),
-    ) -> torch.LongTensor:
+    ) -> torch.Tensor:
         """Pad/truncate tokens, convert them to torch tensors and move them to device.
 
         The padding token is `self.padding_tok_id`. The length of the sequence after
@@ -309,7 +309,7 @@ class Numerizer(abc.ABC):
             device:
 
         Returns:
-            tok_ids: (B, L, E)
+            tok_ids: (B, L)
         """
         seq_len = max(map(len, lslstok_id))
         if embedder.max_seq_len is not None and embedder.max_seq_len > seq_len:
@@ -319,10 +319,11 @@ class Numerizer(abc.ABC):
             lstok_id[:seq_len] + [self.padding_tok_id] * max(0, seq_len - len(lstok_id))
             for lstok_id in lslstok_id
         ]
-        tok_ids: torch.LongTensor = torch.tensor(  # type: ignore
+        tok_ids: torch.Tensor = torch.tensor(
             padded_lslstok_id, dtype=torch.long, device=device,
         )
-        return tok_ids.rename("B", "L")  # type: ignore
+        # (B, L)
+        return tok_ids
 
     def strip_after_embedder(self, embs: torch.Tensor) -> torch.Tensor:
         """Strip special tokens after passing through embedder.
@@ -336,7 +337,6 @@ class Numerizer(abc.ABC):
         Returns:
             embs: (B, L, E)
         """
-        assert embs.names == ("B", "L", "E")  # type: ignore
         return embs
 
     @abc.abstractproperty
@@ -572,7 +572,7 @@ class BertVocab(Vocab):
         lslstok_id: T.List[T.List[int]],
         embedder: layers.Embedder,
         device: torch.device = torch.device("cpu"),
-    ) -> torch.LongTensor:
+    ) -> torch.Tensor:
         """Pad/truncate tokens, convert them to torch tensors and move them to device.
 
         This adds [CLS], [SEP], and obviously [PAD] in the correct spots.
@@ -585,7 +585,7 @@ class BertVocab(Vocab):
             device:
 
         Returns:
-            tok_ids: (B, L, E)
+            tok_ids: (B, L)
         """
         num_special_tokens = 2  # CLS and SEP
         non_special_tok_seq_len = max(map(len, lslstok_id))
@@ -603,17 +603,25 @@ class BertVocab(Vocab):
             + [self.padding_tok_id] * max(0, non_special_tok_seq_len - len(lstok_id))
             for lstok_id in lslstok_id
         ]
-        tok_ids: torch.LongTensor = torch.tensor(  # type: ignore
+        tok_ids: torch.Tensor = torch.tensor(
             padded_lslstok_id, dtype=torch.long, device=device,
         )
+        # (B, L)
 
-        print(tok_ids.size())
-        return tok_ids.rename("B", "L")  # type: ignore
+        return tok_ids
 
     def strip_after_embedder(self, embs: torch.Tensor) -> torch.Tensor:
-        """Look at superclass doc."""
-        assert embs.names == ("B", "L", "E")  # type: ignore
-        return embs[:, 1:]
+        """Look at superclass doc.
+
+        Args:
+            embs: (B, L, E)
+
+        Returns:
+            embs: (B, L, E)
+        """
+        stripped = embs[:, 1:]
+        # (B, L, E)
+        return stripped
 
 
 _T = T.TypeVar("_T")

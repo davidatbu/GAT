@@ -127,8 +127,8 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
                 # TODO: Look at doing this with BLAS operations,
                 #        or may be tensordot.
                 "bhnd,bnmd->bhnm",
-                transed_Q.rename(None),
-                key_edge_features.rename(None),
+                transed_Q,
+                key_edge_features,
             )
             # (B, num_heads, L, L)
 
@@ -183,7 +183,7 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
     def __call__(
         self,
         node_features: torch.Tensor,
-        batched_adj: torch.BoolTensor,
+        batched_adj: torch.Tensor,
         key_edge_features: T.Optional[torch.Tensor] = None,
         value_edge_features: T.Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -301,7 +301,7 @@ class GraphMultiHeadAttentionWrapped(nn.Module):  # type: ignore
     def forward(
         self,
         node_features: torch.FloatTensor,
-        batched_adj: torch.BoolTensor,
+        batched_adj: torch.Tensor,
         key_edge_features: T.Optional[torch.FloatTensor] = None,
         value_edge_features: T.Optional[torch.FloatTensor] = None,
     ) -> torch.Tensor:
@@ -375,7 +375,7 @@ class Embedder(nn.Module, abc.ABC):  # type: ignore
         super().__init__()
 
     @abc.abstractmethod
-    def forward(self, tok_ids: torch.LongTensor) -> torch.Tensor:
+    def forward(self, tok_ids: torch.Tensor) -> torch.Tensor:
         """.
 
         Args:
@@ -385,7 +385,7 @@ class Embedder(nn.Module, abc.ABC):  # type: ignore
         """
         pass
 
-    def __call__(self, tok_ids: torch.LongTensor) -> torch.Tensor:
+    def __call__(self, tok_ids: torch.Tensor) -> torch.Tensor:
         """Only here to help mypy with typechecking. Can be removed without harm."""
         return super().__call__(tok_ids)  # type: ignore
 
@@ -417,7 +417,7 @@ class BertEmbedder(Embedder):
             pretrained_model_name_or_path=self._model_name, config=config
         )
 
-    def forward(self, tok_ids: torch.LongTensor) -> torch.Tensor:
+    def forward(self, tok_ids: torch.Tensor) -> torch.Tensor:
         """Get the BERT token embeddings.
 
         Assumes that tok_ids already is "well-prepared", ie, has the [CLS] and [PAD] and
@@ -431,17 +431,13 @@ class BertEmbedder(Embedder):
                 L = self._model.config.max_position_embeddings
                 And E is the num of dimensions the BERT vectors
         """
-        assert tok_ids.names == ("B", "L")  # type: ignore
-        if tok_ids.size("L") > self.max_seq_len:
+        if tok_ids.size(1) > self.max_seq_len:
             raise Exception(f"BertEmbedder supports input with L<={self.max_seq_len}")
 
-        outputs = self._model(tok_ids.rename(None))
+        outputs = self._model(tok_ids)
 
         last_hidden_outputs = outputs[0]
-        last_hidden_outputs = last_hidden_outputs.refine_names(
-            "B", "L", "E"  # type: ignore
-        )
-
+        # (B, L, E)
         return last_hidden_outputs
 
     @property
@@ -476,7 +472,7 @@ class BasicEmbedder(Embedder):
         self._embedding_dim = embedding_dim
         self._padding_idx = padding_idx
 
-    def forward(self, tok_ids: torch.LongTensor) -> torch.Tensor:
+    def forward(self, tok_ids: torch.Tensor) -> torch.Tensor:
         """.
 
         Args:
@@ -485,9 +481,8 @@ class BasicEmbedder(Embedder):
         Returns:
             embs: (*, E)
         """
-        names = tok_ids.names
-        res = self._embedder(tok_ids.rename(None)).rename(*(names + ("E",)))  # type: ignore
-
+        res = self._embedder(tok_ids)
+        # (*, E)
         return res
 
     @property
@@ -624,11 +619,11 @@ class ReconcilingEmbedder(Embedder):
         """Pool over sub word embeddings to yield word embeddings.
 
         Args:
-            subword_seqs: (B, L, ...)
+            subword_seqs: (B, L, *)
             lssubword_counts: The number of subwords within each "word".
 
         Returns:
-            word_seqs: (B, L, ...)
+            word_seqs: (B, L, *)
                 L here will be max([ sum(subword_counts) for subword_counts in
                 lssubword_counts ])
         """
@@ -636,7 +631,7 @@ class ReconcilingEmbedder(Embedder):
         max_subword_seq_len = max(
             [sum(subword_counts) for subword_counts in lssubword_counts]
         )
-        assert max_subword_seq_len <= subword_seqs.size("L")
+        assert max_subword_seq_len <= subword_seqs.size(1)
 
         # Figure out the longest word seq length
         max_word_seq_len = max(map(len, lssubword_counts))
@@ -652,14 +647,18 @@ class ReconcilingEmbedder(Embedder):
             word_seq_len = len(subword_counts)
             word_seq = torch.stack(
                 [
-                    subword_seq[beg:end].mean(dim=0).rename(None)
+                    subword_seq[beg:end].mean(dim=0)
+                    # (E,)
                     for beg, end in zip(beg_iterator, end_iterator)
                 ]
-                + [self._padding_vec.rename(None)] * (max_word_seq_len - word_seq_len)
+                + [self._padding_vec] * (max_word_seq_len - word_seq_len)
+                # (E,)
             )
+            # (L, E)
 
             lsword_seq.append(word_seq)
-        word_seqs = torch.stack(lsword_seq).rename("B", "L", "E")  # type: ignore
+        word_seqs = torch.stack(lsword_seq)
+        # (B, L, E)
         return word_seqs
 
     @property
@@ -698,13 +697,13 @@ class PositionalEmbedder(Embedder):
             positional_embs: (B, L, E)
                 Where L is the size of the longest lstok_id in lslstok_id
         """
-        cur_max = token_ids.size("L")
-        if cur_max > self.embs.size("L"):
+        cur_max = token_ids.size(1)
+        if cur_max > self.embs.size(1):
             logger.info(f"Increasing max position embedding to {cur_max}")
             self.register_buffer("embs", self._create_embs(cur_max))
 
-        batch_size = token_ids.size("B")
-        return self.embs[:, :cur_max].expand(batch_size, -1, -1)
+        B = token_ids.size(0)
+        return self.embs[:, :cur_max].expand(B, -1, -1)
 
     def _create_embs(self, max_length: int) -> torch.Tensor:
         """Create the sinusodial embeddings.
@@ -715,9 +714,8 @@ class PositionalEmbedder(Embedder):
         This is called every time we get a request for a position that exceeds our
         cached version.
         """
-        embs = torch.zeros(  # type: ignore
-            1, max_length, self.embedding_dim, names=("B", "L", "E")
-        )  # TODO: torch should recognize named tensors in their types
+        embs = torch.zeros(1, max_length, self.embedding_dim, dtype=torch.float)
+        # (1, L, E)
         position_enc = np.array(
             [
                 [
@@ -731,7 +729,7 @@ class PositionalEmbedder(Embedder):
         embs[0, :, 1::2] = torch.from_numpy(np.cos(position_enc[:, 1::2]))
         embs.detach_()
         embs.requires_grad = False
-        return embs  # type: ignore
+        return embs
 
     @property
     def max_seq_len(self) -> T.Optional[int]:
@@ -814,9 +812,9 @@ class GATLayered(nn.Module):  # type: ignore
 
     def forward(
         self,
-        node_ids: torch.LongTensor,
-        batched_adj: torch.BoolTensor,
-        edge_types: T.Optional[torch.LongTensor],
+        node_ids: torch.Tensor,
+        batched_adj: torch.Tensor,
+        edge_types: T.Optional[torch.Tensor],
     ) -> Tensor:
         node_features = self._lsnode_feature_embedder[0](node_ids)
         for embedder in self._lsnode_feature_embedder[1:]:
@@ -841,9 +839,9 @@ class GATLayered(nn.Module):  # type: ignore
 
     def __call__(
         self,
-        node_ids: torch.LongTensor,
-        batched_adj: torch.BoolTensor,
-        edge_types: T.Optional[torch.LongTensor],
+        node_ids: torch.Tensor,
+        batched_adj: torch.Tensor,
+        edge_types: T.Optional[torch.Tensor],
     ) -> Tensor:
         return super().__call__(  # type: ignore
             node_ids=node_ids, batched_adj=batched_adj, edge_types=edge_types
