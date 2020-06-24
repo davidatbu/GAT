@@ -1,8 +1,8 @@
 from typing import Dict
 from typing import List
 
-import spacy  # type: ignore
-from spacy.tokens import Doc  # type: ignore
+import spacy
+from spacy.tokens import Doc
 
 from ..utils.base import EdgeList
 from ..utils.base import EdgeTypeList
@@ -10,74 +10,27 @@ from ..utils.base import Graph
 from ..utils.base import NodeList
 from .base import SentenceToGraph
 
-# https://github.com/explosion/spacy-models/releases/tag/en_core_web_sm-2.2.5
-_id2edge_type = [
-    "ROOT",
-    "acl",
-    "acomp",
-    "advcl",
-    "advmod",
-    "agent",
-    "amod",
-    "appos",
-    "attr",
-    "aux",
-    "auxpass",
-    "case",
-    "cc",
-    "ccomp",
-    "compound",
-    "conj",
-    "csubj",
-    "csubjpass",
-    "dative",
-    "dep",
-    "det",
-    "dobj",
-    "expl",
-    "intj",
-    "mark",
-    "meta",
-    "neg",
-    "nmod",
-    "npadvmod",
-    "nsubj",
-    "nsubjpass",
-    "nummod",
-    "oprd",
-    "parataxis",
-    "pcomp",
-    "pobj",
-    "poss",
-    "preconj",
-    "predet",
-    "prep",
-    "prt",
-    "punct",
-    "quantmod",
-    "relcl",
-    "xcomp",
-]
-
-
-_edge_type2id = {edge_type: id_ for id_, edge_type in enumerate(_id2edge_type)}
-
 
 class DepSentenceToGraph(SentenceToGraph):
     def __init__(self, spacy_mdl: str = "en_core_web_sm") -> None:
         self._spacy_mdl = spacy_mdl
         self._nlp = spacy.load(self._spacy_mdl, disable=["tagger", "ner"])
 
+        self._id2edge_type: List[str] = self._nlp.meta["labels"]["parser"]
+        self._edge_type2id = {
+            edge_type: id_ for id_, edge_type in enumerate(self._id2edge_type)
+        }
+
     def __repr__(self) -> str:
         return f"DepS2G_{self._spacy_mdl}"
 
     @property
     def edge_type2id(self) -> Dict[str, int]:
-        return _edge_type2id
+        return self._edge_type2id
 
     @property
     def id2edge_type(self) -> List[str]:
-        return _id2edge_type
+        return self._id2edge_type
 
     def to_graph(self, lsword: List[str]) -> Graph:
         sent = " ".join(lsword)
