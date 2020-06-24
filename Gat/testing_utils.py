@@ -6,6 +6,7 @@ import tempfile
 import traceback
 import typing as T
 import unittest
+from pathlib import Path
 
 
 F = T.TypeVar("F", bound=T.Callable[[T.Any], T.Any])
@@ -37,7 +38,7 @@ class TempDirMixin:
     """
 
     def setUp(self) -> None:
-        self._temp_dir = tempfile.gettempdir()
+        self._temp_dir = Path(tempfile.mkdtemp())
 
     def tearDown(self) -> None:
         shutil.rmtree(self._temp_dir)
