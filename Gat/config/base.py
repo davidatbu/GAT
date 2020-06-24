@@ -144,17 +144,21 @@ class PreprocessingConfig(Config):
         undirected: bool,
         dataset_dir: str,
         sent2graph_name: TT.Literal["dep", "srl"],
+        unk_thres: int = 1,
     ) -> None:
         self.sent2graph_name = sent2graph_name
         self.dataset_dir = dataset_dir
         self.undirected = undirected
+        self.unk_thres = unk_thres
 
 
-_T = T.TypeVar("_T", bound=GATForSequenceClassificationConfig)
-
-
-class EverythingConfig(Config, T.Generic[_T]):
-    def __init__(self, trainer: TrainerConfig, preprop: PreprocessingConfig, model: _T):
+class EverythingConfig(Config):
+    def __init__(
+        self,
+        trainer: TrainerConfig,
+        preprop: PreprocessingConfig,
+        model: GATForSequenceClassificationConfig,
+    ):
         self.trainer = trainer
         self.model = model
         self.preprop = preprop

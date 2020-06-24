@@ -56,33 +56,32 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
         # by taking weights from a linear layer
 
         self.softmax = nn.Softmax(
-            dim="N_right"  # type: ignore
-        )  # It will be softmaxing (B, N_left, N_right)
+            dim="L_right"  # type: ignore
+        )  # It will be softmaxing (B, L_left, L_right)
         self.dropout = nn.Dropout(p=edge_dropout_p)
         self.register_buffer("neg_infinity", torch.tensor(-float("inf")))
 
     def forward(
         self,
         node_features: torch.Tensor,
-        adj: torch.Tensor,
+        batched_adj: torch.BoolTensor,
         key_edge_features: T.Optional[torch.Tensor] = None,
         value_edge_features: T.Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """.
 
         Args:
-            adj: (B, N_left, N_right)
-                adj[b, i, j] means there's a directed edge from the j-th node to
-                the i-th node of the b-th graph in the batch.
+            batched_adj: (B, L_left, L_right)
+                batched_adj[b, i, j] means there's a directed edge from the i-th node to
+                the j-th node of the b-th graph in the batch.
 
                 That means, node features of the j-th node will affect the calculation
                 of the node features of the i-th node.
             node_features: (B, N, E)
-            value_edge_features and key_edge_features: (B, N_left, N_right, E)
+            value_edge_features and key_edge_features: (B, L_left, L_right, E)
                 edge_features[b, i, j, :] are the features of the directed edge from
-                the j-th node to the i-th node of the b-th graph in the batch.
+                the i-th node to the j-th node of the b-th graph in the batch.
 
-                That means, this E long vector will affect e_{ji} and z_j
         Returns:
             result: (B, N, E)
         """
@@ -102,10 +101,10 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
 
         # Compute node attention probability
         att_scores = torch.matmul(
-            transed_Q.rename(N="N_left"),  # type: ignore
-            transed_K.rename(N="N_right").transpose("N_right", "head_size"),  # type: ignore # noqa:
+            transed_Q.rename(L="L_left"),  # type: ignore
+            transed_K.rename(L="L_right").transpose("L_right", "head_size"),  # type: ignore # noqa:
         )
-        # att_scores: (B, head_size, N_left, N_right)
+        # att_scores: (B, head_size, L_left, L_right)
 
         if key_edge_features is not None:
             # Einstein notation used here .
@@ -127,40 +126,56 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
                 "bhnd,bnmd->bhnm",
                 transed_Q.rename(None),
                 key_edge_features.rename(None),
-            ).rename("B", "num_heads", "N_left", "N_right")
+            ).rename("B", "num_heads", "L_left", "L_right")
 
             att_scores = att_scores + edge_att_scores
 
         att_scores /= math.sqrt(self.embed_dim)
-        # Prepare  adj to broadT.cast to head size
-        adj = T.cast(
-            torch.BoolTensor, adj.align_to("B", "num_heads", "N_left", "N_right")  # type: ignore # noqa:
+        # Prepare  batched_adj to broadT.cast to head size
+        batched_adj = T.cast(
+            torch.BoolTensor,
+            batched_adj.align_to("B", "num_heads", "L_left", "L_right").expand(  # type: ignore
+                node_features.size("B"),
+                self.num_heads,
+                node_features.size("L"),
+                node_features.size("L"),
+            ),
         )
         # Inject the graph structure by setting non existent edges' scores to
         # negative infinity
         att_scores_names = T.cast(
             T.Optional[T.List[T.Optional[str]]], att_scores.names
         )  # I'm not sure why mypy needs this cast
-        att_scores = torch.where(  # type: ignore
-            adj.rename(None), att_scores.rename(None), self.neg_infinity  # type: ignore
+        att_scores_after_graph_injected = torch.where(  # type: ignore
+            batched_adj.rename(None), att_scores.rename(None), self.neg_infinity  # type: ignore
         ).rename(*att_scores_names)
-        att_probs = self.softmax(att_scores)
-        # att_probs: (B, head_size, N_left, N_right)
+        att_probs = self.softmax(att_scores_after_graph_injected)
+
+        # Named tensors are great! Except that they are not fully supported.
+        att_probs_names = att_probs.names
+        att_probs.rename_(None)
+
+        # If a node was not connected to any edge, we'll
+        # have some nans in here, set the nans to zero
+        att_probs = torch.where(att_probs != att_probs, torch.tensor(0.0), att_probs)
+
+        if torch.isnan(att_probs).all(dim=2).any():
+            breakpoint()
+        # att_probs: (B, head_size, L_left, L_right)
 
         # Apply dropout
-        names = att_probs.names
-        att_probs = self.dropout(att_probs.rename(None)).rename(*names)  # type: ignore
+        att_probs = self.dropout(att_probs).rename(*att_probs_names)  # type: ignore
 
         # Again combine values using attention
         new_node_features = torch.matmul(att_probs, transed_V)
-        new_node_features = new_node_features.rename(N_left="N")  # type: ignore
+        new_node_features = new_node_features.rename(L_left="L")  # type: ignore
 
         if value_edge_features:
             # Not yet implemented
             pass
 
         # Reshape to concatenate the heads again
-        new_node_features = new_node_features.transpose("num_heads", "N")
+        new_node_features = new_node_features.transpose("num_heads", "L")
         # new_node_features: (B, N, num_heads, head_size)
         new_node_features = new_node_features.flatten(("num_heads", "head_size"), "E")  # type: ignore # noqa:
         # new_node_features: (B, N, E)
@@ -173,14 +188,14 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
     def __call__(
         self,
         node_features: torch.Tensor,
-        adj: torch.Tensor,
+        batched_adj: torch.BoolTensor,
         key_edge_features: T.Optional[torch.Tensor] = None,
         value_edge_features: T.Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Only here to help mypy with typechecking. Can be removed without harm."""
         return super().__call__(  # type: ignore
             node_features=node_features,
-            adj=adj,
+            batched_adj=batched_adj,
             key_edge_features=key_edge_features,
             value_edge_features=value_edge_features,
         )
@@ -191,7 +206,7 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
         )
 
         # Returning  (B, num_heads, N, head_size)
-        return W.transpose("N", "num_heads")  # type: ignore
+        return W.transpose("L", "num_heads")  # type: ignore
 
 
 class Rezero(nn.Module):  # type: ignore
@@ -281,13 +296,13 @@ class GraphMultiHeadAttentionWrapped(nn.Module):  # type: ignore
     def forward(
         self,
         node_features: torch.FloatTensor,
-        adj: torch.BoolTensor,
+        batched_adj: torch.BoolTensor,
         key_edge_features: T.Optional[torch.FloatTensor] = None,
         value_edge_features: T.Optional[torch.FloatTensor] = None,
     ) -> torch.Tensor:
         return self.wrapper(
             node_features,
-            adj=adj,
+            batched_adj=batched_adj,
             key_edge_features=key_edge_features,
             value_edge_features=value_edge_features,
         )
@@ -295,14 +310,14 @@ class GraphMultiHeadAttentionWrapped(nn.Module):  # type: ignore
     def __call__(
         self,
         node_features: torch.Tensor,
-        adj: torch.Tensor,
+        batched_adj: torch.Tensor,
         key_edge_features: T.Optional[torch.Tensor] = None,
         value_edge_features: T.Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Only here to help mypy with typechecking. Can be removed without harm."""
         return super().__call__(  # type: ignore
             node_features=node_features,
-            adj=adj,
+            batched_adj=batched_adj,
             key_edge_features=key_edge_features,
             value_edge_features=value_edge_features,
         )
@@ -397,8 +412,6 @@ class BertEmbedder(Embedder):
             pretrained_model_name_or_path=self._model_name, config=config
         )
 
-        self._vocab: data.BertVocab
-
     def forward(self, tok_ids: torch.LongTensor) -> torch.Tensor:
         """Get the BERT token embeddings.
 
@@ -461,17 +474,15 @@ class BasicEmbedder(Embedder):
     def forward(self, tok_ids: torch.LongTensor) -> torch.Tensor:
         """.
 
-        This doesn't check if tok_ids is less than 512 long along the L dimension,
-        which is necessary for BERT.
-
         Args:
-            tok_ids: (B, L)
+            tok_ids: (*)
 
         Returns:
-            embs: (B, L, E)
+            embs: (*, E)
         """
-        assert tok_ids.names == ("B", "L")  # type: ignore
-        res = self._embedder(tok_ids.rename(None)).rename("B", "L", "E")  # type: ignore
+        names = tok_ids.names
+        res = self._embedder(tok_ids.rename(None)).rename(*(names + ("E",)))  # type: ignore
+
         return res
 
     @property
@@ -639,11 +650,9 @@ class ReconcilingEmbedder(Embedder):
                     subword_seq[beg:end].mean(dim=0).rename(None)
                     for beg, end in zip(beg_iterator, end_iterator)
                 ]
-                + [self._padding_vec] * (max_word_seq_len - word_seq_len)
+                + [self._padding_vec.rename(None)] * (max_word_seq_len - word_seq_len)
             )
 
-            # TODO: Remove
-            assert len(word_seq) == len(subword_counts)
             lsword_seq.append(word_seq)
         word_seqs = torch.stack(lsword_seq).rename("B", "L", "E")  # type: ignore
         return word_seqs
@@ -730,8 +739,8 @@ class GATLayered(nn.Module):  # type: ignore
         self,
         config: GATLayeredConfig,
         lsnode_feature_embedder: T.List[Embedder],
-        key_edge_feature_embedder: T.Optional[Embedder],
-        value_edge_feature_embedder: T.Optional[Embedder],
+        key_edge_feature_embedder: T.Optional[BasicEmbedder],
+        value_edge_feature_embedder: T.Optional[BasicEmbedder],
     ):
         """It's like the transformer.
 
@@ -758,15 +767,19 @@ class GATLayered(nn.Module):  # type: ignore
                 Not yet implemented.
         """
         embedding_dim = lsnode_feature_embedder[0].embedding_dim
-        for embedder in (
-            lsnode_feature_embedder
-            + ([key_edge_feature_embedder] if key_edge_feature_embedder else [])
-            + ([value_edge_feature_embedder] if value_edge_feature_embedder else [])
-        ):
+
+        assert embedding_dim % config.num_heads == 0
+        for embedder in lsnode_feature_embedder:
             assert embedder.embedding_dim == embedding_dim
+
+        for embdr in [value_edge_feature_embedder, key_edge_feature_embedder]:
+            if embdr:
+                assert embdr.embedding_dim == embedding_dim // config.num_heads
         super().__init__()
 
-        self._lsnode_feature_embedder = lsnode_feature_embedder
+        self._lsnode_feature_embedder: T.Sequence[Embedder] = nn.ModuleList(  # type: ignore
+            lsnode_feature_embedder
+        )
         self._key_edge_feature_embedder = key_edge_feature_embedder
         self._value_edge_feature_embedder = value_edge_feature_embedder
         self._lsmultihead_att_wrapper: T.Iterable[GraphMultiHeadAttentionWrapped] = nn.ModuleList(  # type: ignore # noqa:
@@ -780,6 +793,7 @@ class GATLayered(nn.Module):  # type: ignore
                 for _ in range(config.num_layers)
             ]
         )
+        setattr(self._lsmultihead_att_wrapper, "debug_name", "lsmultihead_att_wrapper")
         self._lsfeed_forward_wrapper: T.Iterable[FeedForwardWrapped] = nn.ModuleList(  # type: ignore # noqa:
             [
                 FeedForwardWrapped(
@@ -791,11 +805,12 @@ class GATLayered(nn.Module):  # type: ignore
                 for _ in range(config.num_layers)
             ]
         )
+        setattr(self._lsfeed_forward_wrapper, "debug_name", "lsfeedforward_wrapper")
 
     def forward(
         self,
         node_ids: torch.LongTensor,
-        adj: Tensor,
+        batched_adj: torch.BoolTensor,
         edge_types: T.Optional[torch.LongTensor],
     ) -> Tensor:
         node_features = self._lsnode_feature_embedder[0](node_ids)
@@ -811,7 +826,7 @@ class GATLayered(nn.Module):  # type: ignore
         ):
             node_features = multihead_att_wrapped(
                 node_features=node_features,
-                adj=adj,
+                batched_adj=batched_adj,
                 key_edge_features=key_edge_features,
             )
 
@@ -821,12 +836,12 @@ class GATLayered(nn.Module):  # type: ignore
 
     def __call__(
         self,
-        word_ids: torch.LongTensor,
-        adj: Tensor,
+        node_ids: torch.LongTensor,
+        batched_adj: torch.BoolTensor,
         edge_types: T.Optional[torch.LongTensor],
     ) -> Tensor:
-        return super.__call__(  # type: ignore
-            word_ids=word_ids, adj=adj, edge_types=edge_types
+        return super().__call__(  # type: ignore
+            node_ids=node_ids, batched_adj=batched_adj, edge_types=edge_types
         )
 
 

@@ -7,81 +7,121 @@ from __future__ import annotations
 
 import tempfile
 import typing as T
+import unittest
 from pathlib import Path
 
-import pytest
 import torch
 from torch import nn
 from tqdm import tqdm  # type: ignore
 
 from Gat.neural import layers
-from tests.conftest import GatSetup
+from tests.common import DeviceMixin
+from tests.common import EverythingConfigMixin
 
 
-@pytest.fixture(scope="session")
-def temp_dir() -> Path:
-    return Path(tempfile.mkdtemp(prefix="GAT_test"))
-
-
-def test_best_num_heads(gat_setup: GatSetup, device: torch.device) -> None:
-
-    if not device == torch.device("cuda"):
-        lsnum_heads = [4, 12]
-    else:
-        lsnum_heads = [2, 4, 12, 64, 384]
-
-    crs_entrpy = nn.CrossEntropyLoss()
-    n_steps = 5000
-
-    steps_to_converge_for_num_heads: T.Dict[int, int] = {}
-    for num_heads in lsnum_heads:
-        head_size = gat_setup.all_config.model.embed_dim // num_heads
-        # Edge features are dependent on head size
-        key_edge_features: torch.FloatTensor = torch.randn(  # type: ignore
-            gat_setup.all_config.trainer.train_batch_size,
-            gat_setup.seq_length,
-            gat_setup.seq_length,
-            head_size,
-            names=("B", "N_left", "N_right", "head_size"),
-            requires_grad=True,
-            device=device,
+class TestGraphMultiHeadAttention(
+    DeviceMixin, EverythingConfigMixin, unittest.TestCase
+):
+    def setUp(self) -> None:
+        super().setUp()
+        self._seq_length = 6
+        self._node_features = torch.randn(  # type: ignore
+            [
+                self._all_config.trainer.train_batch_size,
+                self._seq_length,
+                self._all_config.model.embedding_dim,
+            ],
+            names=("B", "L", "E"),
+            device=self._device,
         )
-
-        multihead_att = layers.GraphMultiHeadAttention(
-            embed_dim=gat_setup.all_config.model.embed_dim,
-            num_heads=num_heads,
-            edge_dropout_p=0.3,
-        )
-        multihead_att.to(device)
-        adam = torch.optim.Adam(
-            # Include key_edge_features in features to be optimized
-            [key_edge_features]
-            + T.cast(T.List[torch.FloatTensor], list(multihead_att.parameters())),
-            lr=1e-3,
-        )
-        multihead_att.train()
-        for step in tqdm(range(1, n_steps + 1), desc=f"num_heads={num_heads}"):
-            after_self_att = multihead_att(
-                adj=gat_setup.adj,
-                node_features=gat_setup.node_features,
-                key_edge_features=key_edge_features,
+        self._batched_adj: torch.BoolTensor = (
+            torch.randn(  # type: ignore
+                [
+                    self._all_config.trainer.train_batch_size,
+                    self._seq_length,
+                    self._seq_length,
+                ],
+                names=("B", "L_left", "L_right"),
+                device=self._device,
             )
-            loss = crs_entrpy(
-                after_self_att.flatten(["B", "N"], "BN").rename(None),
-                gat_setup.node_labels.flatten(["B", "N"], "BN").rename(None),
-            )
-            preds = after_self_att.rename(None).argmax(dim=-1)
-            if torch.all(torch.eq(preds, gat_setup.node_labels)):
-                steps_to_converge_for_num_heads[num_heads] = step
-                break
-            loss.backward()
-            adam.step()
-        if not torch.all(torch.eq(preds, gat_setup.node_labels)):
-            print(f"Did not converge for num_heads={num_heads}")
-    print(
-        "converged for heads: "
-        + " | ".join(
-            f"num_heads: {num_heads}, step: {steps}"
-            for num_heads, steps in steps_to_converge_for_num_heads.items()
+            > 1
         )
-    )
+
+        self._batched_adj.rename(None)[
+            :, range(self._seq_length), range(self._seq_length)
+        ] = True  # Make sure all the self loops are there
+        self._node_labels: torch.LongTensor = torch.zeros(  # type: ignore
+            [self._all_config.trainer.train_batch_size, self._seq_length],
+            dtype=torch.long,
+            names=("B", "L"),
+        )
+
+        self._node_labels.rename(None)[:, range(self._seq_length)] = torch.tensor(
+            range(self._seq_length)
+        )
+
+    def test_best_num_heads(self) -> None:
+
+        if not self._device == torch.device("cuda"):
+            lsnum_heads = [4, 12]
+        else:
+            lsnum_heads = [2, 4, 12, 64, 384]
+
+        crs_entrpy = nn.CrossEntropyLoss()
+        n_steps = 5000
+
+        steps_to_converge_for_num_heads: T.Dict[int, int] = {}
+        for num_heads in lsnum_heads:
+            head_size = self._all_config.model.embedding_dim // num_heads
+            # Edge features are dependent on head size
+            key_edge_features: torch.FloatTensor = torch.randn(  # type: ignore
+                [
+                    self._all_config.trainer.train_batch_size,
+                    self._seq_length,
+                    self._seq_length,
+                    head_size,
+                ],
+                names=("B", "L_left", "L_right", "head_size"),
+                requires_grad=True,
+                device=self._device,
+                dtype=torch.float,
+            )
+
+            multihead_att = layers.GraphMultiHeadAttention(
+                embed_dim=self._all_config.model.embedding_dim,
+                num_heads=num_heads,
+                edge_dropout_p=0.3,
+            )
+            multihead_att.to(self._device)
+            adam = torch.optim.Adam(
+                # Include key_edge_features in features to be optimized
+                [key_edge_features]
+                + T.cast(T.List[torch.FloatTensor], list(multihead_att.parameters())),
+                lr=1e-3,
+            )
+            multihead_att.train()
+            for step in tqdm(range(1, n_steps + 1), desc=f"num_heads={num_heads}"):
+                after_self_att = multihead_att(
+                    batched_adj=self._batched_adj,
+                    node_features=self._node_features,
+                    key_edge_features=key_edge_features,
+                )
+                loss = crs_entrpy(
+                    after_self_att.flatten(["B", "L"], "BL").rename(None),
+                    self._node_labels.flatten(["B", "L"], "BL").rename(None),
+                )
+                preds = after_self_att.rename(None).argmax(dim=-1)
+                if torch.all(torch.eq(preds, self._node_labels)):
+                    steps_to_converge_for_num_heads[num_heads] = step
+                    break
+                loss.backward()
+                adam.step()
+            if not torch.all(torch.eq(preds, self._node_labels)):
+                print(f"Did not converge for num_heads={num_heads}")
+        print(
+            "converged for heads: "
+            + " | ".join(
+                f"num_heads: {num_heads}, step: {steps}"
+                for num_heads, steps in steps_to_converge_for_num_heads.items()
+            )
+        )

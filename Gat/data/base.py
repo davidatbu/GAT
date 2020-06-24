@@ -622,18 +622,12 @@ _D = T.TypeVar("_D")
 
 
 class NiceDataset(Dataset, T.Iterable[_T], abc.ABC):  # type: ignore
-    def map(self, func: T.Callable[[_T], _S]) -> NiceDataset[_S]:
-
-        orig_dataset = self
-
-        class NewDataset(NiceDataset[_S]):
-            def __getitem__(self, i: int) -> _S:
-                return func(orig_dataset[i])
-
-        return NewDataset()
-
     @abc.abstractmethod
     def __getitem__(self, i: int) -> _T:
+        pass
+
+    @abc.abstractmethod
+    def __len__(self) -> int:
         pass
 
     def __iter__(self,) -> T.Iterator[_T]:
@@ -653,14 +647,20 @@ class TransformedDataset(NiceDataset[_S], T.Generic[_T, _S]):
     def __getitem__(self, i: int) -> _S:
         return self._transform(self.base_dataset[i])
 
+    def __len__(self) -> int:
+        return len(self.base_dataset)
 
-class BaseSentenceToGraphDataset(NiceDataset[GraphExample]):
+
+_GenericVocab = T.TypeVar("_GenericVocab", bound=Vocab, covariant=True)
+
+
+class BaseSentenceToGraphDataset(NiceDataset[GraphExample], T.Generic[_GenericVocab]):
     @abc.abstractproperty
     def sent2graph(self) -> SentenceToGraph:
         pass
 
     @abc.abstractproperty
-    def vocab(self) -> Vocab:
+    def vocab(self) -> _GenericVocab:
         pass
 
     @abc.abstractproperty
@@ -673,11 +673,12 @@ class BaseSentenceToGraphDataset(NiceDataset[GraphExample]):
 
 
 class UndirectedDataset(
-    TransformedDataset[GraphExample, GraphExample], BaseSentenceToGraphDataset
+    TransformedDataset[GraphExample, GraphExample],
+    BaseSentenceToGraphDataset[_GenericVocab],
 ):
     _REVERSED = "_REVERSED"
 
-    def __init__(self, base_dataset: BaseSentenceToGraphDataset):
+    def __init__(self, base_dataset: BaseSentenceToGraphDataset[_GenericVocab]):
         self._base_dataset = base_dataset
         self._id2edge_type = self._base_dataset.id2edge_type + [
             edge_type + self._REVERSED for edge_type in base_dataset.id2edge_type
@@ -687,7 +688,7 @@ class UndirectedDataset(
         }
 
     @property
-    def base_dataset(self) -> BaseSentenceToGraphDataset:
+    def base_dataset(self) -> BaseSentenceToGraphDataset[_GenericVocab]:
         return self._base_dataset
 
     def _transform(self, example: GraphExample) -> GraphExample:
@@ -716,7 +717,7 @@ class UndirectedDataset(
         return self._base_dataset.sent2graph
 
     @property
-    def vocab(self) -> Vocab:
+    def vocab(self) -> _GenericVocab:
         return self._base_dataset.vocab
 
     @property
@@ -729,9 +730,10 @@ class UndirectedDataset(
 
 
 class ConnectToClsDataset(
-    TransformedDataset[GraphExample, GraphExample], BaseSentenceToGraphDataset
+    TransformedDataset[GraphExample, GraphExample],
+    BaseSentenceToGraphDataset[_GenericVocab],
 ):
-    def __init__(self, base_dataset: SentenceGraphDataset):
+    def __init__(self, base_dataset: BaseSentenceToGraphDataset[_GenericVocab]):
         cls_edge_name = "CLS_EDGE"
         assert cls_edge_name not in base_dataset.id2edge_type
         self._base_dataset = base_dataset
@@ -741,7 +743,7 @@ class ConnectToClsDataset(
         self._edge_type2id.update({cls_edge_name: self._cls_edge_id})
 
     @property
-    def base_dataset(self) -> SentenceGraphDataset:
+    def base_dataset(self) -> BaseSentenceToGraphDataset[_GenericVocab]:
         return self._base_dataset
 
     def _transform(self, example: GraphExample) -> GraphExample:
@@ -762,7 +764,7 @@ class ConnectToClsDataset(
         return self._base_dataset.sent2graph
 
     @property
-    def vocab(self) -> Vocab:
+    def vocab(self) -> _GenericVocab:
         return self._base_dataset.vocab
 
     @property
@@ -808,7 +810,7 @@ class ConnectToClsDataset(
         return new_graph
 
 
-class SentenceGraphDataset(BaseSentenceToGraphDataset, Cacheable):
+class SentenceGraphDataset(BaseSentenceToGraphDataset[BasicVocab], Cacheable):
     """A dataset that turns a TextSource into a dataset of `GraphExample`s.
 
     We handle here:
@@ -852,7 +854,7 @@ class SentenceGraphDataset(BaseSentenceToGraphDataset, Cacheable):
         return self._sent2graph
 
     @property
-    def vocab(self) -> Vocab:
+    def vocab(self) -> BasicVocab:
         return self._vocab
 
     @property
@@ -994,7 +996,9 @@ def load_splits(
     delimiter: str = "\t",
     unk_thres: int = 2,
 ) -> T.Tuple[
-    T.Dict[str, SentenceGraphDataset], T.Dict[str, CsvTextSource], BasicVocab,
+    T.Dict[str, BaseSentenceToGraphDataset[BasicVocab]],
+    T.Dict[str, CsvTextSource],
+    BasicVocab,
 ]:
     """Build `Vocab` and `Labels` from training data. Process all splits."""
     assert "train" in splits
@@ -1016,7 +1020,7 @@ def load_splits(
     )
 
     cls_sent2graph = SENT2GRAPHS[sent2graph_name]
-    split_datasets: T.Dict[str, SentenceGraphDataset] = {
+    split_datasets: T.Dict[str, BaseSentenceToGraphDataset[BasicVocab]] = {
         split: SentenceGraphDataset(
             cache_dir=dataset_dir,
             txt_src=txt_src,

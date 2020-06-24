@@ -24,10 +24,14 @@ class GATForSequenceClassification(nn.Module):  # type: ignore
             cls_tok_id: We need to assert that word_ids[:, 0] in `self.forward()` is
                 indeed equal to it.
         """
+        assert config.dataset_dep is not None
+        super().__init__()
 
         self._cls_tok_id = word_vocab.cls_tok_id
 
         positional_embedder = layers.PositionalEmbedder(config.embedding_dim)
+
+        setattr(positional_embedder, "debug_name", "positional_embedder")
         if config.node_embedding_type == "basic":
             word_embedder: layers.Embedder = layers.BasicEmbedder(
                 num_embeddings=word_vocab.vocab_size,
@@ -41,13 +45,20 @@ class GATForSequenceClassification(nn.Module):  # type: ignore
                 sub_word_vocab, word_vocab, sub_word_embedder
             )
 
+        setattr(word_embedder, "debug_name", "word_embedder")
+        self._word_embedder = word_embedder
+
         if config.use_edge_features:
+            head_size = config.embedding_dim // config.gat_layered.num_heads
             key_edge_feature_embedder: T.Optional[
                 layers.BasicEmbedder
             ] = layers.BasicEmbedder(
-                num_embeddings=config.num_edge_types,
-                embedding_dim=config.embedding_dim,
+                num_embeddings=config.dataset_dep.num_edge_types,
+                embedding_dim=head_size,
                 padding_idx=word_vocab.padding_tok_id,
+            )
+            setattr(
+                key_edge_feature_embedder, "debug_name", "key_edge_feature_embedder"
             )
         else:
             key_edge_feature_embedder = None
@@ -61,35 +72,46 @@ class GATForSequenceClassification(nn.Module):  # type: ignore
             value_edge_feature_embedder=None,
         )
 
-        self.dropout = nn.Dropout(config.gat_layered.feat_dropout_p)
-        self.linear = nn.Linear(config.embedding_dim, config.num_classes)
+        self._dropout = nn.Dropout(config.gat_layered.feat_dropout_p)
+        self._linear = nn.Linear(config.embedding_dim, config.dataset_dep.num_classes)
+
+        setattr(self._linear, "debug_name", "linear")
+
+    @property
+    def word_embedder(self) -> layers.Embedder:
+        """Used in train.py's LitGatForSequenceClassification._collate_fn"""
+        return self._word_embedder
 
     def forward(
         self,
         word_ids: torch.LongTensor,
-        adj: torch.LongTensor,
+        batched_adj: torch.BoolTensor,
         edge_types: T.Optional[torch.LongTensor],
     ) -> Tensor:
 
-        h = self._gat_layered(word_ids=word_ids, adj=adj, edge_types=edge_types)
+        word_ids.rename_("B", "L")
+        batched_adj.rename_("B", "L_left", "L_right")
+        edge_types.rename_("B", "L_left", "L_right")
 
-        assert word_ids[:, 0].equal(
-            torch.tensor(self._cls_tok_id, dtype=torch.long)
-            .align_as(word_ids)
-            .expand_as(word_ids)
+        h = self._gat_layered(
+            node_ids=word_ids, batched_adj=batched_adj, edge_types=edge_types
+        )
+
+        assert torch.all(
+            word_ids[:, 0] == torch.tensor(self._cls_tok_id, dtype=torch.long)
         )
         cls_id_h = h[:, 0]
 
-        cls_id_h = self.dropout(cls_id_h)
-        logits = self.linear(cls_id_h)
+        cls_id_h = self._dropout(cls_id_h)
+        logits = self._linear(cls_id_h)
 
         return logits
 
     def __call__(
         self,
         word_ids: torch.LongTensor,
-        adj: torch.LongTensor,
+        batched_adj: torch.BoolTensor,
         edge_types: T.Optional[torch.LongTensor],
     ) -> Tensor:
 
-        return super().__call__(word_ids, adj, edge_types)  # type: ignore
+        return super().__call__(word_ids, batched_adj, edge_types)  # type: ignore
