@@ -809,6 +809,8 @@ class GATLayered(nn.Module):  # type: ignore
         )
         setattr(self._lsfeed_forward_wrapper, "debug_name", "lsfeedforward_wrapper")
 
+        self._dropout = nn.Dropout(config.feat_dropout_p)
+
     def forward(
         self,
         node_ids: torch.Tensor,
@@ -818,6 +820,8 @@ class GATLayered(nn.Module):  # type: ignore
         node_features = self._lsnode_feature_embedder[0](node_ids)
         for embedder in self._lsnode_feature_embedder[1:]:
             node_features = node_features + embedder(node_ids)
+
+        node_features = self._dropout(node_features)
 
         if self._key_edge_feature_embedder:
             assert edge_types is not None
