@@ -48,7 +48,6 @@ class LitGatForSequenceClassification(LightningModule):
     ):
         super().__init__()
         self._all_config = all_config
-        self.save_hyperparameters(all_config.as_flat_dict())
 
     def setup(self, stage: str) -> None:
         self._setup_data()
@@ -75,15 +74,20 @@ class LitGatForSequenceClassification(LightningModule):
         self._txt_srcs = txt_srcs
         self._word_vocab: data.BasicVocab = word_vocab
 
-    def _setup_model(self) -> None:
-        model_config = self._all_config.model
 
         # Set dataset dependent configuration
         model_config.dataset_dep = config.GATForSequenceClassificationDatasetDepConfig(
             num_classes=len(self._datasets["train"].vocab.labels.all_lbls),
             num_edge_types=len(self._datasets["train"].id2edge_type),
         )
-        if model_config.node_embedding_type == "pooled_bert":
+
+        self.save_hyperparameters(all_config.as_flat_dict())
+
+        
+    def _setup_model(self) -> None:
+        model_config = self._all_config.model
+
+                if model_config.node_embedding_type == "pooled_bert":
             sub_word_vocab: T.Optional[data.BertVocab] = data.BertVocab()
         else:
             sub_word_vocab = None
@@ -304,7 +308,7 @@ class LitGatForSequenceClassification(LightningModule):
 def main() -> None:
     all_config = config.EverythingConfig(
         trainer=config.TrainerConfig(
-            lr=2e-5, train_batch_size=128, eval_batch_size=128, epochs=40,
+            lr=2e-5, train_batch_size=128, eval_batch_size=64, epochs=40,
         ),
         preprop=config.PreprocessingConfig(
             undirected=True,
@@ -317,7 +321,7 @@ def main() -> None:
         model=config.GATForSequenceClassificationConfig(
             embedding_dim=768,
             gat_layered=config.GATLayeredConfig(
-                num_heads=6, intermediate_dim=768, feat_dropout_p=0.1, num_layers=6,
+                num_heads=12, intermediate_dim=768, feat_dropout_p=0.3, num_layers=10,
             ),
             node_embedding_type="pooled_bert",
             use_edge_features=True,
