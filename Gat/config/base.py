@@ -80,6 +80,7 @@ class TrainerConfig(Config):
         train_batch_size: int,
         eval_batch_size: int,
         use_cuda: bool = True,
+        early_stop_patience: int = 3,
         do_eval_every_epoch: bool = True,
         do_eval_on_truncated_train_set: bool = True,
     ):
@@ -90,6 +91,7 @@ class TrainerConfig(Config):
         self.do_eval_every_epoch = do_eval_every_epoch
         self.eval_batch_size = eval_batch_size
         self.train_batch_size = train_batch_size
+        self.early_stop_patience = early_stop_patience
         self.do_eval_on_truncated_train_set = do_eval_on_truncated_train_set
 
 

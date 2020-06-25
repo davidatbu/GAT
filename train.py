@@ -1,18 +1,14 @@
 from __future__ import annotations
 
 import logging
-import random
 import typing as T
 from pathlib import Path
-from pprint import pformat
 
-import numpy as np
-import sklearn.metrics as skmetrics
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.core.lightning import LightningModule
-from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.loggers.base import LightningLoggerBase
 from pytorch_lightning.metrics.functional import accuracy
 from pytorch_lightning.trainer import seed_everything
@@ -28,6 +24,8 @@ from Gat import utils
 from Gat.config import base as config
 from Gat.loggers.wandb_logger import WandbLogger
 from Gat.neural import models
+
+# from pytorch_lightning.loggers import TensorBoardLogger
 
 
 logger = logging.getLogger("__main__")
@@ -48,6 +46,8 @@ class LitGatForSequenceClassification(LightningModule):
     ):
         super().__init__()
         self._all_config = all_config
+
+        self.save_hyperparameters(self._all_config.as_flat_dict())
 
     def setup(self, stage: str) -> None:
         self._setup_data()
@@ -74,20 +74,16 @@ class LitGatForSequenceClassification(LightningModule):
         self._txt_srcs = txt_srcs
         self._word_vocab: data.BasicVocab = word_vocab
 
-
         # Set dataset dependent configuration
-        model_config.dataset_dep = config.GATForSequenceClassificationDatasetDepConfig(
+        self._all_config.model.dataset_dep = config.GATForSequenceClassificationDatasetDepConfig(
             num_classes=len(self._datasets["train"].vocab.labels.all_lbls),
             num_edge_types=len(self._datasets["train"].id2edge_type),
         )
 
-        self.save_hyperparameters(all_config.as_flat_dict())
-
-        
     def _setup_model(self) -> None:
         model_config = self._all_config.model
 
-                if model_config.node_embedding_type == "pooled_bert":
+        if model_config.node_embedding_type == "pooled_bert":
             sub_word_vocab: T.Optional[data.BertVocab] = data.BertVocab()
         else:
             sub_word_vocab = None
@@ -308,26 +304,37 @@ class LitGatForSequenceClassification(LightningModule):
 def main() -> None:
     all_config = config.EverythingConfig(
         trainer=config.TrainerConfig(
-            lr=2e-5, train_batch_size=128, eval_batch_size=64, epochs=40,
+            lr=2e-5, train_batch_size=128, eval_batch_size=128, epochs=40,
         ),
         preprop=config.PreprocessingConfig(
             undirected=True,
             # dataset_dir="actual_data/SST-2_tiny",
+            dataset_dir="actual_data/SST-2_small",
             # dataset_dir="actual_data/SST-2",
-            dataset_dir="actual_data/glue_data/SST-2",
+            # dataset_dir="actual_data/glue_data/SST-2",
             # dataset_dir="actual_data/paraphrase/paws_small",
-            sent2graph_name="dep",
+            sent2graph_name="srl",
         ),
         model=config.GATForSequenceClassificationConfig(
             embedding_dim=768,
             gat_layered=config.GATLayeredConfig(
-                num_heads=12, intermediate_dim=768, feat_dropout_p=0.3, num_layers=10,
+                num_heads=12, intermediate_dim=768, feat_dropout_p=0.3, num_layers=4,
             ),
             node_embedding_type="pooled_bert",
             use_edge_features=True,
             dataset_dep=None,
         ),
     )
+
+    early_stop_callback: T.Optional[EarlyStopping] = None
+    if all_config.trainer.early_stop_patience > 0:
+        early_stop_callback = EarlyStopping(
+            monitor="val_acc",
+            min_delta=0.00,
+            patience=all_config.trainer.early_stop_patience,
+            verbose=False,
+            mode="max",
+        )
 
     model = LitGatForSequenceClassification(all_config)
 
@@ -340,8 +347,8 @@ def main() -> None:
     trainer = Trainer(
         logger=loggers,
         max_epochs=all_config.trainer.epochs,
-        num_sanity_val_steps=0,
         gpus=1,
+        early_stop_callback=early_stop_callback,
     )
 
     trainer.fit(model)
