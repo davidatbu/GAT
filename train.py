@@ -11,7 +11,6 @@ import sklearn.metrics as skmetrics
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torchviz  # type: ignore
 from pytorch_lightning.core.lightning import LightningModule
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.loggers.base import LightningLoggerBase
@@ -116,16 +115,20 @@ class LitGatForSequenceClassification(LightningModule):
         word_ids: torch.Tensor = self._word_vocab.prepare_for_embedder(
             lsnodeid2wordid, self._gat_model.word_embedder
         )
+        word_ids.requires_grad_(False)
         # (B, L)
 
         B, L = word_ids.size()
         # Build the adjacnecy matrices
         batched_adj = torch.zeros([B, L, L], dtype=torch.bool)
+        batched_adj.requires_grad_(False)
 
         # Build the edge types
         edge_types: torch.Tensor = torch.zeros(
             [B, L, L], dtype=torch.long,
         )
+        edge_types.requires_grad_(False)
+        edge_types.detach_()
         for batch_num, (lsedge, lsedge_type) in enumerate(zip(lslsedge, lslsedge_type)):
             indexing_arrs: T.Tuple[T.List[int], T.List[int]] = tuple(zip(*lsedge))  # type: ignore
             batched_adj[batch_num][indexing_arrs[0], indexing_arrs[1]] = 1
@@ -180,7 +183,7 @@ class LitGatForSequenceClassification(LightningModule):
         print(f"passing params of length: {len(params)}")
         return optim.Adam(params, lr=self._trainer_config.lr)
 
-    def forward(  # type: ignore
+    def forward(
         self,
         word_ids: torch.Tensor,
         batched_adj: torch.Tensor,
@@ -211,7 +214,7 @@ class LitGatForSequenceClassification(LightningModule):
         self, batch: OneBatch, batch_idx: int, dataloader_idx: int = 0
     ) -> T.Dict[str, Tensor]:
         logits = self(batch.word_ids, batch.batched_adj, batch.edge_types)
-        return {"logits": logits, "target": batch.target}
+        return {"logits": logits.detach(), "target": batch.target}
 
     def on_train_start(self) -> None:
         return
@@ -301,19 +304,20 @@ class LitGatForSequenceClassification(LightningModule):
 def main() -> None:
     all_config = config.EverythingConfig(
         trainer=config.TrainerConfig(
-            lr=1e-3, train_batch_size=128, eval_batch_size=128, epochs=10,
+            lr=2e-5, train_batch_size=128, eval_batch_size=128, epochs=40,
         ),
         preprop=config.PreprocessingConfig(
             undirected=True,
-            dataset_dir="actual_data/SST-2_tiny",
-            # dataset_dir="actual_data/glue_data/SST-2",
+            # dataset_dir="actual_data/SST-2_tiny",
+            # dataset_dir="actual_data/SST-2",
+            dataset_dir="actual_data/glue_data/SST-2",
             # dataset_dir="actual_data/paraphrase/paws_small",
             sent2graph_name="dep",
         ),
         model=config.GATForSequenceClassificationConfig(
             embedding_dim=768,
             gat_layered=config.GATLayeredConfig(
-                num_heads=12, intermediate_dim=768, feat_dropout_p=0.3, num_layers=10,
+                num_heads=6, intermediate_dim=768, feat_dropout_p=0.1, num_layers=6,
             ),
             node_embedding_type="pooled_bert",
             use_edge_features=True,
@@ -330,7 +334,10 @@ def main() -> None:
     # loggers.append(tb_logger)
     loggers.append(wandb_logger)
     trainer = Trainer(
-        logger=loggers, max_epochs=all_config.trainer.epochs, num_sanity_val_steps=0
+        logger=loggers,
+        max_epochs=all_config.trainer.epochs,
+        num_sanity_val_steps=0,
+        gpus=1,
     )
 
     trainer.fit(model)

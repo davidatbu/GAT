@@ -58,8 +58,10 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
         self.softmax = nn.Softmax(dim=-1)
         # target: (B, L_left, L_right)
         self.dropout = nn.Dropout(p=edge_dropout_p)
-        self.neg_infinity: torch.Tensor
-        self.register_buffer("neg_infinity", torch.tensor(-float("inf")))
+        self._neg_infinity: torch.Tensor
+        self._zero: torch.Tensor
+        self.register_buffer("_neg_infinity", torch.tensor(-float("inf")))
+        self.register_buffer("_zero", torch.tensor(0, dtype=torch.float))
 
     def forward(
         self,
@@ -143,7 +145,7 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
         # Inject the graph structure by setting non existent edges' scores to
         # negative infinity
         att_scores_after_graph_injected = torch.where(
-            batched_adj, att_scores, self.neg_infinity
+            batched_adj, att_scores, self._neg_infinity
         )
         # (B, num_heads, L, L)
         att_probs = self.softmax(att_scores_after_graph_injected)
@@ -151,7 +153,7 @@ class GraphMultiHeadAttention(nn.Module):  # type: ignore
 
         # If a node was not connected to any edge, we'll
         # have some nans in here, set the nans to zero
-        att_probs = torch.where(att_probs != att_probs, torch.tensor(0.0), att_probs)
+        att_probs = torch.where(att_probs != att_probs, self._zero, att_probs)
         # (B, num_heads, L, L)
 
         # Apply dropout
