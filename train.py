@@ -11,10 +11,10 @@ import sklearn.metrics as skmetrics
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import wandb
+import torchviz  # type: ignore
 from pytorch_lightning.core.lightning import LightningModule
 from pytorch_lightning.loggers import TensorBoardLogger
-from pytorch_lightning.loggers.wandb import WandbLogger
+from pytorch_lightning.loggers.base import LightningLoggerBase
 from pytorch_lightning.metrics.functional import accuracy
 from pytorch_lightning.trainer import seed_everything
 from pytorch_lightning.trainer import Trainer
@@ -27,6 +27,7 @@ from tqdm import tqdm  # type: ignore
 from Gat import data
 from Gat import utils
 from Gat.config import base as config
+from Gat.loggers.wandb_logger import WandbLogger
 from Gat.neural import models
 
 
@@ -202,16 +203,13 @@ class LitGatForSequenceClassification(LightningModule):
         return {"logits": logits, "target": batch.target}
 
     def on_train_start(self) -> None:
+        return
         one_example: OneBatch = next(iter(self.train_dataloader()))
-        if hasattr(self.logger.experiment, "add_graph"):
-            self.logger.experiment.add_graph(
-                self._gat_model,
-                (
-                    one_example.word_ids,
-                    one_example.batched_adj,
-                    one_example.edge_types,
-                ),
-            )
+        # NOTE: The tb logger must be the first
+        self.logger[0].experiment.add_graph(
+            self._gat_model,
+            (one_example.word_ids, one_example.batched_adj, one_example.edge_types,),
+        )
 
     def validation_epoch_end(
         self,
@@ -304,7 +302,7 @@ def main() -> None:
         model=config.GATForSequenceClassificationConfig(
             embedding_dim=768,
             gat_layered=config.GATLayeredConfig(
-                num_heads=6, intermediate_dim=768, feat_dropout_p=0.3, num_layers=10,
+                num_heads=12, intermediate_dim=768, feat_dropout_p=0.3, num_layers=10,
             ),
             node_embedding_type="pooled_bert",
             use_edge_features=True,
@@ -314,8 +312,15 @@ def main() -> None:
 
     model = LitGatForSequenceClassification(all_config)
 
-    logger = WandbLogger(project="gat")
-    trainer = Trainer(logger=logger)
+    loggers: T.List[LightningLoggerBase] = []
+    # wandb_logger = WandbLogger(project="gat", sync_tensorboard=True)
+    # tb_logger = TensorBoardLogger(save_dir=wandb_logger.experiment.dir)
+    # TB logger must be first
+    # loggers.append(tb_logger)
+    # loggers.append(wandb_logger)
+    trainer = Trainer(
+        logger=loggers, max_epochs=all_config.trainer.epochs, num_sanity_val_steps=0
+    )
 
     trainer.fit(model)
 

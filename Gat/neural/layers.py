@@ -516,17 +516,15 @@ class ReconcilingEmbedder(Embedder):
         self._word_vocab = word_vocab
         self._sub_word_embedder = sub_word_embedder
 
-        # Get the padding vector once, because we'll need it again and again
-        prepared_pad_tok_id = sub_word_vocab.prepare_for_embedder(
-            [[sub_word_vocab.padding_tok_id]], sub_word_embedder
+        # NOTE: Since we're doing graph self attention(ie, only
+        # nodes that were specified to be connected to node x
+        # wil be considered in computing the feature of node x after a self attention
+        # layer), we can set the padding_vec to be a requires_grad=False constant
+        E = sub_word_embedder.embedding_dim
+        self.register_buffer(
+            "_padding_vec", torch.zeros([1, E], dtype=torch.float, requires_grad=False)
         )
-        with_special_toks = self._sub_word_embedder(prepared_pad_tok_id)
-        without_special_toks = self._sub_word_vocab.strip_after_embedder(
-            with_special_toks
-        )
-
-        no_padding_toks = without_special_toks[:, :1]
-        self._padding_vec = no_padding_toks.squeeze()
+        self._padding_vec: Tensor
 
     def forward(self, word_ids: torch.Tensor) -> torch.Tensor:
         """Pool over subwords to create word embedding.
@@ -581,7 +579,7 @@ class ReconcilingEmbedder(Embedder):
         # "Flat" sub word tokenization for each sequence
         lslssubwordid: T.List[T.List[int]] = []
         # The number of sub words in each word
-        lssubword_counts: T.List[T.List[int]] = []
+        lslssubword_count: T.List[T.List[int]] = []
 
         max_subword_seq_len = float("inf")
         if self._sub_word_embedder.max_seq_len is not None:
@@ -596,7 +594,7 @@ class ReconcilingEmbedder(Embedder):
                     break
                 lssubwordid.extend(subwordids_for_one_word)
                 subword_counts.append(len(subwordids_for_one_word))
-            lssubword_counts.append(subword_counts)
+            lslssubword_count.append(subword_counts)
             lslssubwordid.append(lssubwordid)
 
         prepared_subwordids = self._sub_word_vocab.prepare_for_embedder(
@@ -610,56 +608,55 @@ class ReconcilingEmbedder(Embedder):
             with_special_tok_subword_embs
         )
 
-        pooled_word_embs = self.pool_sequences(subword_embs, lssubword_counts)
+        pooled_word_embs = self.pool_sequences(subword_embs, lslssubword_count)
         return pooled_word_embs
 
     def pool_sequences(
-        self, subword_seqs: torch.Tensor, lssubword_counts: T.List[T.List[int]]
+        self, subword_embs: torch.Tensor, lslssubword_count: T.List[T.List[int]]
     ) -> torch.Tensor:
         """Pool over sub word embeddings to yield word embeddings.
 
         Args:
-            subword_seqs: (B, L, *)
-            lssubword_counts: The number of subwords within each "word".
+            subword_embs: (B, L, *)
+            lslssubword_count: The number of subwords within each "word".
 
         Returns:
-            word_seqs: (B, L, *)
+            word_embs: (B, L, *)
                 L here will be max([ sum(subword_counts) for subword_counts in
-                lssubword_counts ])
+                lslssubword_count ])
         """
         # Check sub word sequences lengths fit within subword_seq.shape
         max_subword_seq_len = max(
-            [sum(subword_counts) for subword_counts in lssubword_counts]
+            [sum(subword_counts) for subword_counts in lslssubword_count]
         )
-        assert max_subword_seq_len <= subword_seqs.size(1)
+        assert max_subword_seq_len <= subword_embs.size(1)
 
         # Figure out the longest word seq length
-        max_word_seq_len = max(map(len, lssubword_counts))
+        max_word_seq_len = max(map(len, lslssubword_count))
 
-        # Word embeddings per seq
-        lsword_seq: T.List[torch.Tensor] = []
+        B = subword_embs.size(0)
+        L = max_word_seq_len
+        E = subword_embs.size(2)
+        embs = torch.zeros(
+            [B, L, E], dtype=torch.float, device=next(self.parameters()).device
+        )
 
-        for subword_seq, subword_counts in zip(subword_seqs, lssubword_counts):
-            beg_and_end_indices = itertools.accumulate([0] + subword_counts)
+        for batch_num, lssubword_count in enumerate(lslssubword_count):
+            beg_and_end_indices = itertools.accumulate([0] + lssubword_count)
             beg_iterator, end_iterator = itertools.tee(beg_and_end_indices, 2)
-
             next(end_iterator)  # Consume the 0 at the beginning
-            word_seq_len = len(subword_counts)
-            word_seq = torch.stack(
-                [
-                    subword_seq[beg:end].mean(dim=0)
-                    # (E,)
-                    for beg, end in zip(beg_iterator, end_iterator)
-                ]
-                + [self._padding_vec] * (max_word_seq_len - word_seq_len)
-                # (E,)
-            )
-            # (L, E)
 
-            lsword_seq.append(word_seq)
-        word_seqs = torch.stack(lsword_seq)
-        # (B, L, E)
-        return word_seqs
+            for word_idx, (beg, end) in enumerate(zip(beg_iterator, end_iterator)):
+                embs[batch_num, word_idx] = subword_embs[batch_num, beg:end].mean(
+                    dim=0, keepdim=True
+                )
+
+            # Fill up the rest with the subword padding vector
+            word_seq_len = end  # after for loop finishes.
+
+            embs[batch_num, word_seq_len:] = self._padding_vec
+
+        return embs
 
     @property
     def embedding_dim(self) -> int:
