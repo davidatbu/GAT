@@ -148,21 +148,32 @@ class LitGatForSequenceClassification(LightningModule):
             dataset=self._datasets["train"],
             collate_fn=self._collate_fn,
             batch_size=self._trainer_config.train_batch_size,
+            num_workers=8,
         )
 
         return res
 
     def val_dataloader(self) -> T.List[DataLoader[OneBatch]]:
-        res = DataLoader(
+        val_dataloader = DataLoader(
             self._datasets["val"],
             collate_fn=self._collate_fn,
             batch_size=self._trainer_config.eval_batch_size,
+            num_workers=8,
         )
 
-        self._val_dataset_names = ["val"]
-        # iF we were to evaluate multiple datasets( for example, if we wanted
-        # to get the loss on the training dataset itself,), we'd indicate that here
-        return [res]
+        cut_train_dataset = data.CutDataset(
+            self._datasets["train"], total_len=len(self._datasets["val"])
+        )
+        cut_train_dataloader = DataLoader(
+            cut_train_dataset,
+            collate_fn=self._collate_fn,
+            batch_size=self._trainer_config.eval_batch_size,
+            num_workers=8,
+        )
+
+        self._val_dataset_names = ["val", "cut_train"]
+
+        return [val_dataloader, cut_train_dataloader]
 
     def configure_optimizers(self) -> optim.optimizer.Optimizer:
         params = list(self.parameters())
@@ -313,11 +324,11 @@ def main() -> None:
     model = LitGatForSequenceClassification(all_config)
 
     loggers: T.List[LightningLoggerBase] = []
-    # wandb_logger = WandbLogger(project="gat", sync_tensorboard=True)
+    wandb_logger = WandbLogger(project="gat", sync_tensorboard=True)
     # tb_logger = TensorBoardLogger(save_dir=wandb_logger.experiment.dir)
     # TB logger must be first
     # loggers.append(tb_logger)
-    # loggers.append(wandb_logger)
+    loggers.append(wandb_logger)
     trainer = Trainer(
         logger=loggers, max_epochs=all_config.trainer.epochs, num_sanity_val_steps=0
     )

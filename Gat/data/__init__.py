@@ -7,6 +7,7 @@ from .base import Cacheable
 from .base import ConcatTextSource
 from .base import ConnectToClsDataset
 from .base import CsvTextSource
+from .base import CutDataset
 from .base import FromIterableTextSource
 from .base import load_splits
 from .base import Numerizer
@@ -29,6 +30,7 @@ __all__ = [
     "load_splits",
     "SentenceGraphDataset",
     "TextSource",
+    "CutDataset",
     "Vocab",
     "ConnectToClsDataset",
 ]

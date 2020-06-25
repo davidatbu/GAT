@@ -659,6 +659,27 @@ class TransformedDataset(NiceDataset[_S], T.Generic[_T, _S]):
         return len(self.base_dataset)
 
 
+class CutDataset(NiceDataset[_T]):
+    def __init__(self, base_dataset: NiceDataset[_T], total_len: int) -> None:
+        """
+        Args:
+            total_len: length of cut dataset.
+        """
+        if total_len < 1:
+            raise Exception()
+        self._total_len = total_len
+        self._base_dataset = base_dataset
+
+    def __getitem__(self, i: int) -> _T:
+        if i < self._total_len:
+            return self._base_dataset[i]
+        else:
+            raise IndexError()
+
+    def __len__(self) -> int:
+        return self._total_len
+
+
 _GenericVocab = T.TypeVar("_GenericVocab", bound=Vocab, covariant=True)
 
 
