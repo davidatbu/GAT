@@ -1,26 +1,25 @@
 from __future__ import annotations
 
 import typing as T
-from pathlib import Path
+
+from bpemb import BPEmb  # type: ignore
 
 from Gat.data.tokenizers import Tokenizer
 
-from bpemb import BPEmb
-
 
 class BPETokenizer(Tokenizer):
-    def __init__(self, BPEemb) -> None:
-        """.
-
-        Args:
-            vocab_size: For now, we are doing only 25000, no reason we can't change
-            that.
-        """
-        self._vocab_size = vocab_size
-
+    def __init__(self, bpemb_en: BPEmb) -> None:
+        """. """
+        assert bpemb_en.lang == "en"
+        try:
+            bpemb_en["<pad>"]
+        except KeyError:
+            raise Exception("BPEmb initialized without padding token.")
+        self._pbemb_en = bpemb_en
+        self._vocab_size = bpemb_en.vocab_size
 
     def tokenize(self, txt: str) -> T.List[str]:
-        pass
+        return self._pbemb_en.encode(txt)  # type: ignore
 
     def __repr__(self) -> str:
-        return f"{self._class__}-model_file_{str(self._model_file)}"
+        return f"{self.__class__}-vocab_size_{str(self._vocab_size)}"
