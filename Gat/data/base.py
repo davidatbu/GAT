@@ -394,6 +394,16 @@ class Vocab(Numerizer):
         pass
 
 
+class SentencePieceVocab(Vocab):
+    def __init__(self, lower_case: bool = True):
+        self._lower_case = lower_case
+
+    def simplify_txt(self, txt: str) -> str:
+        if self._lower_case:
+            return txt.lower()
+        return txt
+
+
 class BasicVocab(Vocab, Cacheable):
     """Vocab subclass that should work for most non-sub-word level tasks.
 

@@ -826,6 +826,7 @@ class GATLayered(nn.Module):  # type: ignore
         if self._key_edge_feature_embedder:
             assert edge_types is not None
             key_edge_features = self._key_edge_feature_embedder(edge_types)
+            key_edge_features = self._dropout(key_edge_features)
 
         for multihead_att_wrapped, feed_forward_wrapped in zip(
             self._lsmultihead_att_wrapper, self._lsfeed_forward_wrapper
