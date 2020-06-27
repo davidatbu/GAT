@@ -63,11 +63,11 @@ class TokenizingReconciler(nnModule):
         """
         lswords = self._word_tokenizer.batch_tokenize(lstxt)
         lssubwordids_per_word = [
-            [self._sub_word_vocab.tokenize_and_get_tok_ids(word) for word in words]
+            [self._sub_word_vocab.tokenize_and_get_lstok_id(word) for word in words]
             for words in lswords
         ]
         # "Flat" sub word tokenization for each sequence
-        lssubwordids: T.List[T.List[int]] = []
+        lslssubwordid: T.List[T.List[int]] = []
         # The number of sub words in each word
         lssubword_counts: T.List[T.List[int]] = []
 
@@ -85,9 +85,12 @@ class TokenizingReconciler(nnModule):
                 subwordids.extend(subwordids_for_one_word)
                 subword_counts.append(len(subwordids_for_one_word))
             lssubword_counts.append(subword_counts)
-            lssubwordids.append(subwordids)
+            lslssubwordid.append(subwordids)
 
-        subword_embs = self._sub_word_embedder(lssubwordids)
+        subword_ids = torch.tensor(
+            lslssubwordid, dtype=torch.long, device=next(self.parameters()).device
+        )
+        subword_embs = self._sub_word_embedder(subword_ids)
 
         pooled_word_embs = self.pool_sequences(subword_embs, lssubword_counts)
         return pooled_word_embs
@@ -116,7 +119,11 @@ class TokenizingReconciler(nnModule):
         max_word_seq_len = max(map(len, lssubword_counts))
 
         # Get the padding vector
-        padding_vec = self._sub_word_embedder([[self._sub_word_vocab.padding_tok_id]])
+        padding_vec = self._sub_word_embedder(
+            torch.tensor(
+                [[self._sub_word_vocab.get_tok_id(self._sub_word_vocab.padding_tok)]]
+            )
+        )
         padding_vec = padding_vec.squeeze()
 
         # Word embeddings per seq

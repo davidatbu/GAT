@@ -8,17 +8,20 @@ convention = google
 max-line-length = 88
 extend-ignore =
     # See https://github.com/PyCQA/pycodestyle/issues/373
-    E203,
-    # Some classes/functions don't need docstrings.
-    D101
-    D102
-    D103
-    D105
-    D107
-    # Sometimes a function is described with a noun better
-    D401
-    # This warning doesn't distinguish referring to superclass signatures.
-    D402
+    E1
+    E2
+    E3
+    E4
+    E5
+
+    W1
+    W2
+    W3
+    W5
+
+    # Mypy overloads
+    F811
+   
 
 # Exclude stubs files
 exclude =

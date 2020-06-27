@@ -13,11 +13,8 @@ from pytorch_lightning.loggers.base import LightningLoggerBase
 from pytorch_lightning.metrics.functional import accuracy
 from pytorch_lightning.trainer import seed_everything
 from pytorch_lightning.trainer import Trainer
-from sklearn.metrics import confusion_matrix
 from torch import Tensor
 from torch.utils.data import DataLoader
-from torch.utils.data import Dataset
-from tqdm import tqdm  # type: ignore
 
 from Gat import data
 from Gat import utils
@@ -57,7 +54,7 @@ class LitGatForSequenceClassification(LightningModule):
         preprop_config = self._all_config.preprop
 
         datasets, txt_srcs, word_vocab = data.load_splits(
-            unk_thres=preprop_config.unk_thres,
+            unk_thres=preprop_config.unk_thres or 1,  # unk_thres is None when BPE/bert
             sent2graph_name=preprop_config.sent2graph_name,
             dataset_dir=Path(preprop_config.dataset_dir),
             lstxt_col=["sentence"],
@@ -85,6 +82,14 @@ class LitGatForSequenceClassification(LightningModule):
 
         if model_config.node_embedding_type == "pooled_bert":
             sub_word_vocab: T.Optional[data.BertVocab] = data.BertVocab()
+        elif model_config.node_embedding_type == "bpe":
+            assert model_config.bpe_vocab_size is not None
+            assert model_config.embedding_dim == 300  # Let's see where this gets us
+            sub_word_vocab = data.BPEVocab(
+                vocab_size=model_config.bpe_vocab_size,
+                load_pretrained_embs=True,
+                embedding_dim=model_config.embedding_dim,  # type: ignore
+            )
         else:
             sub_word_vocab = None
 
@@ -109,9 +114,9 @@ class LitGatForSequenceClassification(LightningModule):
         lslsimp_node: T.List[T.List[int]]
         lsnodeid2wordid: T.List[T.List[int]]
 
-        lslsedge, lslsedge_type, lslsimp_node, lsnodeid2wordid = map(  # type: ignore
-            list, zip(*lsgraph)
-        )
+        lslsedge, lslsedge_type, lslsimp_node, lsnodeid2wordid = [
+            list(tup_graph_attr) for tup_graph_attr in zip(*lsgraph)
+        ]
         word_ids: torch.Tensor = self._word_vocab.prepare_for_embedder(
             lsnodeid2wordid, self._gat_model.word_embedder
         )
@@ -183,7 +188,7 @@ class LitGatForSequenceClassification(LightningModule):
         print(f"passing params of length: {len(params)}")
         return optim.Adam(params, lr=self._trainer_config.lr)
 
-    def forward(
+    def forward(  # type: ignore
         self,
         word_ids: torch.Tensor,
         batched_adj: torch.Tensor,
@@ -323,6 +328,7 @@ def main() -> None:
             node_embedding_type="pooled_bert",
             use_edge_features=True,
             dataset_dep=None,
+            use_pretrained_embs=True,
         ),
     )
 

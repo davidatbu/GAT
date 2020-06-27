@@ -337,42 +337,6 @@ def glove_vector_for_the() -> torch.Tensor:
     )
 
 
-@pytest.fixture
-def basic_vocab() -> BasicVocab:
-    txt_src = FromIterableTextSource(
-        [
-            (["Love never fails.", "Love overcomes all things."], "yes"),
-            (["Guard your heart.", "From his heart, living waters flow."], "no"),
-            (["Always be on guard.", "Be watchful."], "yes"),
-        ]
-    )
-    tokenizer = WrappedSpacyTokenizer()
-    return BasicVocab(
-        txt_src=txt_src,
-        tokenizer=tokenizer,
-        cache_dir=Path(tempfile.gettempdir()),
-        lower_case=True,
-        unk_thres=2,
-    )
-
-
-def test_vocab(basic_vocab: BasicVocab) -> None:
-    set_id2word = set(basic_vocab._id2word)
-    assert len(set_id2word) == len(basic_vocab._id2word)
-
-    expected_setid2word = {
-        "[CLS]",
-        "[PAD]",
-        "[UNK]",
-        "guard",
-        "love",
-        ".",
-        "heart",
-        "be",
-    }
-    assert set_id2word == expected_setid2word
-
-
 def test_draw_svg(sst_dataset: SentenceGraphDataset) -> None:
     example = sst_dataset[0]
 

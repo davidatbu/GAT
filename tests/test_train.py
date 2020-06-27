@@ -3,15 +3,11 @@ import unittest.mock
 import warnings
 
 import torch
-from pytorch_lightning.logging import TensorBoardLogger  # type: ignore
-from pytorch_lightning.trainer import Trainer  # type: ignore
-from torch import nn
+from pytorch_lightning.logging import TensorBoardLogger
+from pytorch_lightning.trainer import Trainer
 
 import train
-from Gat import config
 from Gat import testing_utils
-from Gat import utils
-from Gat.neural import layers
 from tests.common import EverythingConfigMixin
 
 warnings.simplefilter("ignore")
@@ -40,6 +36,7 @@ class TestItRuns(LitGatForSequenceClassificationMixin, unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
 
+    @testing_utils.debug_on()
     def test_it(self) -> None:
         self._do_training()
 
@@ -68,9 +65,9 @@ class TestBackprop(LitGatForSequenceClassificationMixin, unittest.TestCase):
         ):
             self._lit_model = train.LitGatForSequenceClassification(self._all_config)
             self._lit_model.setup("fit")
-            params_before = self._get_params()
+            # params_before = self._get_params()
             self._do_training()
-            params_after = self._get_params()
+            # params_after = self._get_params()
             breakpoint()
 
     @testing_utils.debug_on()

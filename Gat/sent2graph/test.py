@@ -3,7 +3,6 @@ from timeit import default_timer as timer
 from typing import List
 
 from ..data.base import CsvTextSource
-from ..data.base import VocabAndEmb
 from ..utils.base import flatten
 from .dep import DepSentenceToGraph
 from .srl import SRLSentenceToGraph
@@ -17,7 +16,6 @@ class TestSRLSentenceToGraph:
             fp=dataset_dir / "dev.tsv",
             lstxt_col=["sentence"],
             lbl_col="label",
-            allow_unlablled=False,
             csv_reader_kwargs={"delimiter": "\t"},
         )
 

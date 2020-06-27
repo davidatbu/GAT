@@ -1,6 +1,7 @@
 import torch
 
 from Gat import config
+from Gat import testing_utils
 
 
 class TestMixin:
@@ -26,6 +27,7 @@ class EverythingConfigMixin(TestMixin):
         self._all_config
     """
 
+    @testing_utils.debug_on()
     def setUp(self) -> None:
 
         self._all_config = config.EverythingConfig(
@@ -40,11 +42,14 @@ class EverythingConfigMixin(TestMixin):
                 undirected=True,
                 dataset_dir="actual_data/SST-2_tiny",
                 sent2graph_name="dep",
+                unk_thres=None,
             ),
             model=config.GATForSequenceClassificationConfig(
-                config.GATLayeredConfig(num_heads=1, intermediate_dim=20, num_layers=3),
-                embedding_dim=768,
-                node_embedding_type="basic",
+                config.GATLayeredConfig(num_heads=2, intermediate_dim=20, num_layers=3),
+                use_pretrained_embs=False,
+                embedding_dim=300,
+                node_embedding_type="bpe",
+                bpe_vocab_size=25000,
                 use_edge_features=True,
                 dataset_dep=None,
             ),

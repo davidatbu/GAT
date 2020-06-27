@@ -3,6 +3,7 @@ from . import tokenizers
 from .base import BaseSentenceToGraphDataset
 from .base import BasicVocab
 from .base import BertVocab
+from .base import BPEVocab
 from .base import Cacheable
 from .base import ConcatTextSource
 from .base import ConnectToClsDataset
@@ -21,6 +22,7 @@ __all__ = [
     "Numerizer",
     "BasicVocab",
     "BertVocab",
+    "BPEVocab",
     "Cacheable",
     "ConcatTextSource",
     "BaseSentenceToGraphDataset",

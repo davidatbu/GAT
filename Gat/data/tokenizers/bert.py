@@ -4,10 +4,10 @@ import typing as T
 from transformers import AutoTokenizer
 from transformers import BertTokenizer
 
-from ..tokenizers import base
+from Gat.data.tokenizers.base import Tokenizer
 
 
-class WrappedBertTokenizer(base.Tokenizer):
+class WrappedBertTokenizer(Tokenizer):
     """Wrap around BERT's tokenizer, also provide access to the "unwrapped tokenizer.
 
     We need the unwrapped because we want to do prepare some input to run thorugh a

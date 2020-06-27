@@ -23,11 +23,6 @@ from Gat.config import GATLayeredConfig
 logger = logging.getLogger("__main__")
 
 
-# Look at
-# https://mypy.readthedocs.io/en/stable/common_issues.html#using-classes-that-are-generic-in-stubs-but-not-at-runtime
-# for why this is necessary.
-
-
 class GraphMultiHeadAttention(nn.Module):  # type: ignore
     def __init__(
         self, embed_dim: int, num_heads: int, edge_dropout_p: float,
@@ -461,17 +456,42 @@ class BertEmbedder(Embedder):
 
 
 class BasicEmbedder(Embedder):
+    @T.overload
     def __init__(
-        self, num_embeddings: int, embedding_dim: int, padding_idx: int,
+        self, padding_idx: int, *, num_embeddings: int, embedding_dim: int
+    ) -> None:
+        ...
+
+    @T.overload
+    def __init__(self, padding_idx: int, *, pretrained_embs: torch.Tensor) -> None:
+        ...
+
+    def __init__(
+        self,
+        padding_idx: int,
+        pretrained_embs: T.Optional[torch.Tensor] = None,
+        num_embeddings: T.Optional[int] = None,
+        embedding_dim: T.Optional[int] = None,
     ) -> None:
         """Wrapper around `nn.Embedding` that conforms to `Embedder`."""
         super().__init__()
-        self._embedder = nn.Embedding(
-            num_embeddings=num_embeddings,
-            embedding_dim=embedding_dim,
-            padding_idx=padding_idx,
-        )
-        self._embedding_dim = embedding_dim
+
+        embedder: nn.Embedding
+        if pretrained_embs is not None:
+            assert num_embeddings is None and embedding_dim is None
+            embedder = nn.Embedding.from_pretrained(
+                pretrained_embs, padding_idx=padding_idx
+            )
+
+        else:
+            assert num_embeddings is not None and embedding_dim is not None
+            embedder = nn.Embedding(
+                num_embeddings=num_embeddings,
+                embedding_dim=embedding_dim,
+                padding_idx=padding_idx,
+            )
+
+        self._embedder = embedder
         self._padding_idx = padding_idx
 
     def forward(self, tok_ids: torch.Tensor) -> torch.Tensor:
@@ -489,7 +509,7 @@ class BasicEmbedder(Embedder):
 
     @property
     def embedding_dim(self) -> int:
-        return self._embedding_dim
+        return self._embedder.embedding_dim
 
     @property
     def max_seq_len(self) -> T.Optional[int]:
@@ -509,7 +529,7 @@ class ReconcilingEmbedder(Embedder):
         Args:
             sub_word_vocab: We access `sub_word_vocab.tokenizer` and
                 `sub_word_vocab.padding_tok_id`.
-            word_vocab: We'll use `word_vcab.batch_get_toks()`.
+            word_vocab: We'll use `word_vcab.get_lslstok()`.
             sub_word_embedder: We use it to get subword embeddings, and access
                 `sub_.wrod_embedder.max_seq_len`.
         """
@@ -555,7 +575,7 @@ class ReconcilingEmbedder(Embedder):
                               # tokens
         """
         lslswordid: T.List[T.List[int]] = word_ids.cpu().numpy().tolist()
-        lslsword = self._word_vocab.batch_get_toks(lslswordid)
+        lslsword = self._word_vocab.get_lslstok(lslswordid)
         lssubwordids_per_word: T.List[T.List[T.List[int]]] = []
 
         for seq_num in range(len(lslswordid)):
@@ -569,10 +589,12 @@ class ReconcilingEmbedder(Embedder):
                 word = lsword[word_num]
                 wordid = lswordid[word_num]
 
-                if wordid == self._word_vocab.padding_tok_id:  # End of sequence
+                if wordid == self._word_vocab.get_tok_id(
+                    self._word_vocab.padding_tok
+                ):  # End of sequence
                     break
 
-                subwordids_for_one_word = self._sub_word_vocab.tokenize_and_get_tok_ids(
+                subwordids_for_one_word = self._sub_word_vocab.tokenize_and_get_lstok_id(
                     word
                 )
                 subwordids_per_word.append(subwordids_for_one_word)

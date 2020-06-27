@@ -10,19 +10,20 @@ from pathlib import Path
 
 import torch
 import typing_extensions as TT
+from bpemb import BPEmb  # type: ignore
 from torch.utils.data import Dataset
 from tqdm import tqdm  # type: ignore
 from typing_extensions import Counter
 
-from ..sent2graph.base import SentenceToGraph
-from ..sent2graph.dep import DepSentenceToGraph
-from ..sent2graph.srl import SRLSentenceToGraph
-from ..utils import Graph
-from ..utils import GraphExample
-from ..utils import grouper
-from ..utils import SentExample
 from Gat.data import tokenizers
 from Gat.neural import layers
+from Gat.sent2graph.base import SentenceToGraph
+from Gat.sent2graph.dep import DepSentenceToGraph
+from Gat.sent2graph.srl import SRLSentenceToGraph
+from Gat.utils import Graph
+from Gat.utils import GraphExample
+from Gat.utils import grouper
+from Gat.utils import SentExample
 
 
 logger = logging.getLogger(__name__)
@@ -274,22 +275,30 @@ class Numerizer(abc.ABC):
     # TODO: Document
 
     @abc.abstractmethod
-    def get_toks(self, lstok_id: T.List[int]) -> T.List[str]:
+    def get_tok_id(self, tok: str) -> int:
+        pass
+
+    @abc.abstractmethod
+    def get_tok(self, tok_id: int) -> str:
+        pass
+
+    @abc.abstractmethod
+    def get_lstok(self, lstok_id: T.List[int]) -> T.List[str]:
         """Get a list of tokens given a list of token ids."""
         pass
 
-    def batch_get_toks(self, lslstok_id: T.List[T.List[int]]) -> T.List[T.List[str]]:
-        """Batch version of get_toks."""
-        return [self.get_toks(lstok_id) for lstok_id in lslstok_id]
+    def get_lslstok(self, lslstok_id: T.List[T.List[int]]) -> T.List[T.List[str]]:
+        """Batch version of get_lstok."""
+        return [self.get_lstok(lstok_id) for lstok_id in lslstok_id]
 
     @abc.abstractmethod
-    def get_tok_ids(self, lsword: T.List[str]) -> T.List[int]:
+    def get_lstok_id(self, lsword: T.List[str]) -> T.List[int]:
         """Get token ids for the tokens in vocab."""
         pass
 
-    def batch_get_tok_ids(self, lslsword: T.List[T.List[str]]) -> T.List[T.List[int]]:
-        """Batch version of get_tok_ids."""
-        return [self.get_tok_ids(lsword) for lsword in lslsword]
+    def get_lslstok_id(self, lslsword: T.List[T.List[str]]) -> T.List[T.List[int]]:
+        """Batch version of get_lstok_id."""
+        return [self.get_lstok_id(lsword) for lsword in lslsword]
 
     def prepare_for_embedder(
         self,
@@ -316,7 +325,8 @@ class Numerizer(abc.ABC):
             seq_len = embedder.max_seq_len
 
         padded_lslstok_id = [
-            lstok_id[:seq_len] + [self.padding_tok_id] * max(0, seq_len - len(lstok_id))
+            lstok_id[:seq_len]
+            + [self.get_tok_id(self.padding_tok)] * max(0, seq_len - len(lstok_id))
             for lstok_id in lslstok_id
         ]
         tok_ids: torch.Tensor = torch.tensor(
@@ -338,11 +348,6 @@ class Numerizer(abc.ABC):
             embs: (B, L, E)
         """
         return embs
-
-    @abc.abstractproperty
-    def padding_tok_id(self) -> int:
-        """The padding token id."""
-        pass
 
     @property
     def padding_tok(self) -> str:
@@ -372,36 +377,147 @@ class Vocab(Numerizer):
         """Return the tokenizer used to produce this vocabulary."""
         pass
 
-    def tokenize_and_get_tok_ids(self, txt: str) -> T.List[int]:
+    def tokenize_and_get_lstok_id(self, txt: str) -> T.List[int]:
         """Convinience function to call tokenize and get tok ids in one."""
-        return self.get_tok_ids(self.tokenizer.tokenize(self.simplify_txt(txt)))
+        return self.get_lstok_id(self.tokenizer.tokenize(self.simplify_txt(txt)))
 
-    def batch_tokenize_and_get_tok_ids(self, lstxt: T.List[str]) -> T.List[T.List[int]]:
+    def batch_tokenize_and_get_lstok_id(
+        self, lstxt: T.List[str]
+    ) -> T.List[T.List[int]]:
         """Batch version."""
-        return self.batch_get_tok_ids(self.tokenizer.batch_tokenize(lstxt))
+        return self.get_lslstok_id(self.tokenizer.batch_tokenize(lstxt))
+
+    @property
+    def cls_tok(self) -> str:
+        return "[CLS]"
+
+    @property
+    def unk_tok(self) -> str:
+        return "[UNK]"
 
     @abc.abstractproperty
-    def cls_tok_id(self) -> int:
-        """The "CLS" token id.
+    def vocab_size(self) -> int:
+        pass
 
-        Currently, we imitate BERT and create a CLS node to connect words to.
+    @property
+    def has_pretrained_embs(self) -> bool:
+        """Whether this vocabulary has an .pretrained_embs attribute that we can access to get
+        embeddings.
         """
-        pass
+        return False
 
-    @abc.abstractproperty
-    def unk_tok_id(self) -> int:
-        """Token id for uknown token."""
-        pass
+    @property
+    def pretrained_embs(self) -> torch.Tensor:
+        raise Exception(f"{self.__class__} doesn't support pretrained embeddings.")
 
 
-class SentencePieceVocab(Vocab):
-    def __init__(self, lower_case: bool = True):
+class BPEVocab(Vocab):
+    def __init__(
+        self,
+        vocab_size: T.Literal[25000],
+        *,
+        # Currently, one MUST load pretrained embs along
+        load_pretrained_embs: T.Literal[True] = True,
+        embedding_dim: T.Optional[T.Literal[300]] = 300,
+        lower_case: bool = True,
+    ):
+        if not load_pretrained_embs:
+            raise NotImplementedError(
+                "load_pretrained_embs must be true for BPE right now."
+            )
+        if load_pretrained_embs and embedding_dim is None:
+            raise ValueError(
+                "must pass embedding_dim if load_pretrained_embs is specified"
+            )
+        self._bpemb = BPEmb(
+            lang="en",
+            vs=vocab_size,
+            dim=embedding_dim,
+            preprocess=False,
+            add_pad_emb=False,
+        )
+
+        assert self._bpemb.vs == vocab_size
+
+        self._vocab_size = vocab_size + 2  # One for padding, one for the CLS
         self._lower_case = lower_case
+        self._tokenizer = tokenizers.bpe.BPETokenizer(self._bpemb)
+
+        if load_pretrained_embs:
+            self._pretrained_embs: torch.Tensor = torch.zeros(
+                [self.vocab_size, embedding_dim], dtype=torch.float,
+            )
+            self._pretrained_embs[:vocab_size] = torch.from_numpy(self._bpemb.vectors)
+
+        # We add PAD and CLS at the end to avoid further processing the token ids
+        # we get from BPE
+        self._id2word: T.List[str] = self._bpemb.words + [
+            self.padding_tok,
+            self.cls_tok,
+        ]
+        self._word2id: T.Dict[str, int] = {
+            word: id_ for id_, word in enumerate(self._id2word)
+        }
 
     def simplify_txt(self, txt: str) -> str:
         if self._lower_case:
             return txt.lower()
         return txt
+
+    @property
+    def tokenizer(self) -> tokenizers.Tokenizer:
+        """Return the tokenizer used to produce this vocabulary."""
+        return self._tokenizer
+
+    def get_tok(self, tok_id: int) -> str:
+        """
+
+        Raises:
+            KeyError: when a token is not in vocab. If you used self.tokenize, this iwll
+            never happen.
+        """
+        return self._id2word[tok_id]
+
+    def get_tok_id(self, tok: str) -> int:
+        return self._word2id[tok]
+
+    def get_lstok_id(self, lsword: T.List[str]) -> T.List[int]:
+        """
+
+        Raises:
+            KeyError: when a token is not in vocab. If you used self.tokenize, this iwll
+            never happen.
+        """
+
+        return [self._word2id[word] for word in lsword]
+
+    @property
+    def vocab_size(self) -> int:
+        return self._vocab_size
+
+    def get_lstok(self, lsword_id: T.List[int]) -> T.List[str]:
+        return [self._id2word[word_id] for word_id in lsword_id]
+
+    @property
+    def unk_tok(self) -> str:
+        raise ValueError(
+            "BPE embeddings have no UNK token, one can always tokenize down to character level."
+        )
+
+    @property
+    def has_pretrained_embs(self) -> bool:
+        return self._pretrained_embs is not None
+
+    @property
+    def pretrained_embs(self) -> torch.Tensor:
+        if not self.has_pretrained_embs:
+            raise Exception(f"{self.__class__} initialized without pretrained embs.")
+        else:
+            logger.warning(
+                "Note that the CLS token doesn't have a pretrained"
+                "representation, it's initalized to all zeros, just like the PAD token."
+            )
+            return self._pretrained_embs
 
 
 class BasicVocab(Vocab, Cacheable):
@@ -456,17 +572,11 @@ class BasicVocab(Vocab, Cacheable):
         """Look at superclass doc."""
         return ["_id2word", "_labels"]
 
-    @property
-    def padding_tok_id(self) -> int:
-        return 0
+    def get_tok(self, tok_id: int) -> str:
+        return self._id2word[tok_id]
 
-    @property
-    def cls_tok_id(self) -> int:
-        return 1
-
-    @property
-    def unk_tok_id(self) -> int:
-        return 2
+    def get_tok_id(self, tok: str) -> int:
+        return self._word2id[tok]
 
     def __repr__(self) -> str:
         """Look at superclass doc."""
@@ -486,10 +596,12 @@ class BasicVocab(Vocab, Cacheable):
     def tokenizer(self) -> tokenizers.base.Tokenizer:
         return self._tokenizer
 
-    def get_tok_ids(self, lsword: T.List[str]) -> T.List[int]:
-        return [self._word2id.get(word, self.unk_tok_id) for word in lsword]
+    def get_lstok_id(self, lsword: T.List[str]) -> T.List[int]:
+        return [
+            self._word2id.get(word, self.get_tok_id(self.unk_tok)) for word in lsword
+        ]
 
-    def get_toks(self, lsword_id: T.List[int]) -> T.List[str]:
+    def get_lstok(self, lsword_id: T.List[int]) -> T.List[str]:
         return [self._id2word[word_id] for word_id in lsword_id]
 
     def process(self) -> None:
@@ -509,10 +621,10 @@ class BasicVocab(Vocab, Cacheable):
                 lsword = self.tokenizer.tokenize(sent)
                 word_counts.update(lsword)
 
-        self._id2word = [
+        id2word = [
             word for word, count in word_counts.items() if count >= self._unk_thres
         ]
-        self._id2word = ["[PAD]", "[CLS]", "[UNK]"] + self._id2word
+        self._id2word = [self.padding_tok, self.cls_tok, self.unk_tok] + id2word
 
         id2lbl = list(sorted(set(lslbl)))
         self._labels = Labels(id2lbl)
@@ -541,24 +653,24 @@ class BertVocab(Vocab):
         return txt.lower()
 
     @property
-    def padding_tok_id(self) -> int:
-        res = self._tokenizer.unwrapped_tokenizer.pad_token_id
-        return res
+    def vocab_size(self) -> int:
+        return self._tokenizer.unwrapped_tokenizer.vocab_size
 
     @property
-    def cls_tok_id(self) -> int:
-        res = self._tokenizer.unwrapped_tokenizer.cls_token_id
-        return res
+    def padding_tok(self) -> str:
+        return self._tokenizer.unwrapped_tokenizer.pad_token
 
     @property
-    def sep_tok_id(self) -> int:
-        res = self._tokenizer.unwrapped_tokenizer.sep_token_id
-        return res
+    def cls_tok(self) -> str:
+        return self._tokenizer.unwrapped_tokenizer.cls_token
 
     @property
-    def unk_tok_id(self) -> int:
-        res = self._tokenizer.unwrapped_tokenizer.unk_token_id
-        return res
+    def sep_tok(self) -> str:
+        return self._tokenizer.unwrapped_tokenizer.sep_token
+
+    @property
+    def unk_tok(self) -> str:
+        return self._tokenizer.unwrapped_tokenizer.unk_token
 
     def __repr__(self) -> str:
         return f"BertVocab-" f"model_name_{self._tokenizer.bert_model_name}"
@@ -567,11 +679,17 @@ class BertVocab(Vocab):
     def tokenizer(self) -> tokenizers.bert.WrappedBertTokenizer:
         return self._tokenizer
 
-    def get_tok_ids(self, lsword: T.List[str]) -> T.List[int]:
+    def get_tok(self, tok_id: int) -> str:
+        return self._tokenizer.unwrapped_tokenizer.convert_ids_to_tokens(tok_id)
+
+    def get_tok_id(self, tok: str) -> int:
+        return self.tokenizer.unwrapped_tokenizer.convert_tokens_to_ids(tok)
+
+    def get_lstok_id(self, lsword: T.List[str]) -> T.List[int]:
         lstok_id = self.tokenizer.unwrapped_tokenizer.convert_tokens_to_ids(lsword)
         return lstok_id
 
-    def get_toks(self, lsword_id: T.List[int]) -> T.List[str]:
+    def get_lstok(self, lsword_id: T.List[int]) -> T.List[str]:
         lstok: T.List[str] = self.tokenizer.unwrapped_tokenizer.convert_ids_to_tokens(
             lsword_id
         )
@@ -606,11 +724,14 @@ class BertVocab(Vocab):
         ):
             non_special_tok_seq_len = embedder.max_seq_len - num_special_tokens
 
+        cls_tok_id = self.get_tok_id(self.cls_tok)
+        sep_tok_id = self.get_tok_id(self.sep_tok)
+        padding_tok_id = self.get_tok_id(self.padding_tok)
         padded_lslstok_id = [
-            [self.cls_tok_id]
+            [cls_tok_id]
             + lstok_id[:non_special_tok_seq_len]
-            + [self.sep_tok_id]
-            + [self.padding_tok_id] * max(0, non_special_tok_seq_len - len(lstok_id))
+            + [sep_tok_id]
+            + [padding_tok_id] * max(0, non_special_tok_seq_len - len(lstok_id))
             for lstok_id in lslstok_id
         ]
         tok_ids: torch.Tensor = torch.tensor(
@@ -786,7 +907,7 @@ class ConnectToClsDataset(
         return self._base_dataset
 
     def _transform(self, example: GraphExample) -> GraphExample:
-        cls_tok_id = self.base_dataset.vocab.cls_tok_id
+        cls_tok_id = self.base_dataset.vocab.get_tok_id(self.base_dataset.vocab.cls_tok)
         new_example = GraphExample(
             [
                 self._connect_imp_nodes_to_new_node(g, cls_tok_id, self._cls_edge_id)
@@ -831,7 +952,7 @@ class ConnectToClsDataset(
 
         assert g.nodeid2wordid is not None
         if new_node_global_id in g.nodeid2wordid:
-            raise Exception(f"new node to be added in graph already exists.")
+            raise Exception("new node to be added in graph already exists.")
 
         new_node_local_id = 0
 
@@ -968,7 +1089,7 @@ class SentenceGraphDataset(BaseSentenceToGraphDataset[BasicVocab], Cacheable):
             per_column_sentgraph = self._sent2graph.batch_to_graph(per_column_lsword)
 
             # But we do want the UNK tokens for nodeid2wordid
-            per_column_nodeid2wordid = self._vocab.batch_get_tok_ids(per_column_lsword)
+            per_column_nodeid2wordid = self._vocab.get_lslstok_id(per_column_lsword)
             per_column_sentgraph = [
                 Graph(
                     lsedge=lsedge,
@@ -997,7 +1118,7 @@ class SentenceGraphDataset(BaseSentenceToGraphDataset[BasicVocab], Cacheable):
         for sent in lssent:
             lsword = self._vocab.tokenizer.tokenize(self._vocab.simplify_txt(sent))
             lsedge, lsedge_type, lsimp_node, _ = self._sent2graph.to_graph(lsword)
-            nodeid2wordid = self._vocab.tokenize_and_get_tok_ids(sent)
+            nodeid2wordid = self._vocab.tokenize_and_get_lstok_id(sent)
             sentgraph = Graph(
                 lsedge=lsedge,
                 lsedge_type=lsedge_type,
@@ -1030,7 +1151,7 @@ def load_splits(
     sent2graph_name: TT.Literal["srl", "dep"],
     splits: T.List[str] = ["train", "val"],
     fp_ending: str = "tsv",
-    lstxt_col: T.List[str] = ["sentence1", "sentence2"],
+    lstxt_col: T.List[str] = ["sentence"],
     lbl_col: str = "label",
     delimiter: str = "\t",
     unk_thres: int = 2,
@@ -1078,6 +1199,6 @@ def load_splits(
             logger.info(f"{vocab.labels.get_lbl(lbl_id)}")
             for _, _, _, nodeid2wordid in lssentgraph:
                 assert nodeid2wordid is not None
-                logger.info(f"\t{vocab.get_toks(nodeid2wordid)}")
+                logger.info(f"\t{vocab.get_lstok(nodeid2wordid)}")
 
     return split_datasets, txt_srcs, vocab

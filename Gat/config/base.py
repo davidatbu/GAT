@@ -6,7 +6,14 @@ import typing as T
 import typing_extensions as TT
 
 
+_ConfigType = T.TypeVar("_ConfigType", bound="Config")
+
+
 class Config:
+    def __init__(self) -> None:
+        self._did__init__ = True
+        self._validate()
+
     def __setattr__(
         self, n: str, v: T.Optional[T.Union["Config", int, float, str]]
     ) -> None:
@@ -14,17 +21,23 @@ class Config:
         init_signature = inspect.signature(self.__class__.__init__)
         init_param_names = init_signature.parameters.keys()
 
-        if n not in init_param_names:
+        if n not in init_param_names and n != "_did__init__":
             raise Exception(
                 f"{n} is not a valid confiugration for {self.__class__.__name__}"
             )
 
         super().__setattr__(n, v)
-        if not self.validate():
-            raise Exception(f"{str(self)} is invalid.")
 
-    def __str__(self) -> str:
-        return str(self.as_dict())
+        # Don't _validate during __init__ since some things are not yet set yet
+        if hasattr(self, "_did__init__"):
+            self._validate()
+
+    def __repr__(self) -> str:
+        return repr(f"{self.__class__}.from_dict({self.as_dict()})")
+
+    @classmethod
+    def from_dict(cls: T.Type[_ConfigType], d: T.Dict[str, T.Any]) -> _ConfigType:
+        raise NotImplementedError()
 
     def as_dict(self) -> T.Dict[str, T.Any]:
         """Turn this config into a dictionary, recursively."""
@@ -68,8 +81,9 @@ class Config:
 
         return result
 
-    def validate(self) -> bool:
-        return True
+    def _validate(self) -> None:
+        """Raise an exception if the config is invalid."""
+        pass
 
 
 class TrainerConfig(Config):
@@ -93,6 +107,7 @@ class TrainerConfig(Config):
         self.train_batch_size = train_batch_size
         self.early_stop_patience = early_stop_patience
         self.do_eval_on_truncated_train_set = do_eval_on_truncated_train_set
+        super().__init__()
 
 
 class GATLayeredConfig(Config):
@@ -113,6 +128,7 @@ class GATLayeredConfig(Config):
         self.edge_dropout_p = edge_dropout_p
         self.feat_dropout_p = feat_dropout_p
         self.rezero_or_residual = rezero_or_residual
+        super().__init__()
 
 
 class GATForSequenceClassificationDatasetDepConfig(Config):
@@ -121,6 +137,7 @@ class GATForSequenceClassificationDatasetDepConfig(Config):
     ):
         self.num_classes = num_classes
         self.num_edge_types = num_edge_types
+        super().__init__()
 
 
 class GATForSequenceClassificationConfig(Config):
@@ -128,16 +145,29 @@ class GATForSequenceClassificationConfig(Config):
         self,
         gat_layered: GATLayeredConfig,
         embedding_dim: int,
-        node_embedding_type: T.Literal["pooled_bert", "basic"],
+        node_embedding_type: T.Literal["pooled_bert", "basic", "bpe"],
+        use_pretrained_embs: bool,
         use_edge_features: bool,
         dataset_dep: T.Optional[GATForSequenceClassificationDatasetDepConfig],
+        bpe_vocab_size: T.Optional[T.Literal[25000]] = None,
     ):
-        super().__init__()
         self.embedding_dim = embedding_dim
         self.gat_layered = gat_layered
         self.node_embedding_type = node_embedding_type
+        self.use_pretrained_embs = use_pretrained_embs
         self.use_edge_features = use_edge_features
         self.dataset_dep = dataset_dep
+        self.bpe_vocab_size = bpe_vocab_size
+        super().__init__()
+
+    def _validate(self) -> None:
+        if self.node_embedding_type == "pooled_bert":
+            assert self.use_pretrained_embs, "pooled bert means using pretrained"
+
+        if self.node_embedding_type == "bpe":
+            assert self.bpe_vocab_size is not None
+        else:
+            assert self.bpe_vocab_size is None
 
 
 class PreprocessingConfig(Config):
@@ -146,12 +176,13 @@ class PreprocessingConfig(Config):
         undirected: bool,
         dataset_dir: str,
         sent2graph_name: TT.Literal["dep", "srl"],
-        unk_thres: int = 1,
+        unk_thres: T.Optional[int] = 1,
     ) -> None:
         self.sent2graph_name = sent2graph_name
         self.dataset_dir = dataset_dir
         self.undirected = undirected
         self.unk_thres = unk_thres
+        super().__init__()
 
 
 class EverythingConfig(Config):
@@ -164,3 +195,10 @@ class EverythingConfig(Config):
         self.trainer = trainer
         self.model = model
         self.preprop = preprop
+        super().__init__()
+
+    def _validate(self) -> None:
+        if self.model.node_embedding_type in ["pooled_bert", "bpe"]:
+            assert (
+                self.preprop.unk_thres is None
+            ), "why have UNK tokens if we're doing subword tokenization?"
