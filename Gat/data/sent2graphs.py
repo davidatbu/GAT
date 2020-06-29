@@ -363,7 +363,15 @@ class DepSentenceToGraph(SentenceToGraph):
     def to_graph(self, lsword: List[str]) -> utils.Graph:
         sent = " ".join(lsword)
         doc: Doc = self._nlp(sent)
+        return self._spacy_doc_to_graph(doc, self._edge_type2id)
 
+    def batch_to_graph(self, lslsword: List[List[str]]) -> T.List[utils.Graph]:
+        lssent = [" ".join(lsword) for lsword in lslsword]
+        lsdoc: T.Iterable[Doc] = self._nlp.pipe(lssent)
+        return [self._spacy_doc_to_graph(doc, self._edge_type2id) for doc in lsdoc]
+
+    @staticmethod
+    def _spacy_doc_to_graph(doc: Doc, edge_type2id: T.Dict[str, int]) -> utils.Graph:
         lsedge: utils.EdgeList = []
         lsedge_type: utils.EdgeTypeList = []
         lsimp_node: utils.NodeList = []
@@ -375,7 +383,7 @@ class DepSentenceToGraph(SentenceToGraph):
                 lsimp_node.append(token.i)
             else:
                 lsedge.append((token.i, token.head.i))
-                lsedge_type.append(self.edge_type2id[token.dep_])
+                lsedge_type.append(edge_type2id[token.dep_])
 
         assert lsimp_node != []
 
