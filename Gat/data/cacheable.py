@@ -18,7 +18,6 @@ class Cacheable(abc.ABC):
     def __init__(self, cache_dir: Path, ignore_cache: bool) -> None:
         """Check if a cached version is available."""
         # Use the  repr to create a cache dir
-        ignore_cache = True
         obj_repr_hash = hashlib.sha1(repr(self).encode()).hexdigest()
         self.specific_cache_dir = cache_dir / obj_repr_hash
         self.specific_cache_dir.mkdir(exist_ok=True)

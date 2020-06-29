@@ -60,13 +60,18 @@ def load_splits(
             txt_src=txt_src,
             sent2graph=cls_sent2graph(),
             vocab=vocab,
-            processing_batch_size=1000,
+            processing_batch_size=10000,
         )
         for split, txt_src in txt_srcs.items()
     }
+    # Save the vocabularies once more
+    # We need to do this to make sure that
+    # the case of unk_thres = None is well handled
+    vocab.to_cache()
 
     logger.info("First 10 of each split")
     for split, dataset in split_datasets.items():
+
         logger.info(f"{split}")
         for i in range(min(len(dataset), 5)):
             lssentgraph, lbl_id = dataset[i]

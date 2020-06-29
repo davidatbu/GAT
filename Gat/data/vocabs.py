@@ -4,6 +4,7 @@ import typing as T
 from pathlib import Path
 
 import torch
+import typing_extensions as TT
 from bpemb import BPEmb  # type: ignore
 
 from Gat.data.cacheable import Cacheable
@@ -391,11 +392,11 @@ class BertVocab(Vocab):
 class BPEVocab(Vocab):
     def __init__(
         self,
-        vocab_size: T.Literal[25000],
+        vocab_size: TT.Literal[25000],
         *,
         # Currently, one MUST load pretrained embs along
-        load_pretrained_embs: T.Literal[True] = True,
-        embedding_dim: T.Optional[T.Literal[300]] = 300,
+        load_pretrained_embs: TT.Literal[True] = True,
+        embedding_dim: T.Optional[TT.Literal[300]] = 300,
         lower_case: bool = True,
     ):
         if not load_pretrained_embs:
@@ -454,9 +455,6 @@ class BPEVocab(Vocab):
 
     def get_tok_id(self, tok: str) -> int:
         if tok not in self._word2id:
-            logger.warning(
-                f"BPEVocab asked for a token it doens't know: {tok}. Returning unk tok id."
-            )
             tok = self.unk_tok
         return self._word2id[tok]
 
