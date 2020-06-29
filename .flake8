@@ -21,6 +21,8 @@ extend-ignore =
 
     # Mypy overloads
     F811
+
+    F401
    
 
 # Exclude stubs files
