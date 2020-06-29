@@ -15,17 +15,17 @@ class TestEmbs(testing_utils.TempDirMixin, unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
 
-        txt_src = data.FromIterableTextSource(
+        txt_src = data.sources.FromIterableTextSource(
             [(["guard your heart"], "yes"), (["pacification"], "no")]
         )
-        self._basic_vocab = data.BasicVocab(
+        self._basic_vocab = data.vocabs.BasicVocab(
             txt_src=txt_src,
             tokenizer=data.tokenizers.spacy.WrappedSpacyTokenizer(),
             cache_dir=self._temp_dir,
             unk_thres=1,
         )
 
-        self._bert_vocab = data.BertVocab()
+        self._bert_vocab = data.vocabs.BertVocab()
 
         self._bert_embedder = layers.BertEmbedder()
 

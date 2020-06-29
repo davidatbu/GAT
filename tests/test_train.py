@@ -3,8 +3,8 @@ import unittest.mock
 import warnings
 
 import torch
-from pytorch_lightning.logging import TensorBoardLogger
-from pytorch_lightning.trainer import Trainer
+from pytorch_lightning.logging import TensorBoardLogger  # type: ignore
+from pytorch_lightning.trainer import Trainer  # type: ignore
 
 import train
 from Gat import testing_utils

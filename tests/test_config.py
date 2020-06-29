@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import typing as T
+import unittest
 
-import pytest
-
-from Gat.config import Config
+from Gat.configs import Config
 
 
 class GrandChildConfig(Config):
@@ -27,23 +26,36 @@ class ParentConfig(Config):
         self.child_config = child_config
 
 
-@pytest.fixture
-def parent_config() -> ParentConfig:
-    return ParentConfig(999, "999", ChildConfig(GrandChildConfig(0.999)))
+class TestConfig(unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self._parent = ParentConfig(999, "999", ChildConfig(GrandChildConfig(0.999)))
+
+    def tearDown(self) -> None:
+        super().tearDown()
+
+    def test_it(self) -> None:
+        self.assertDictEqual(
+            self._parent.as_dict(),
+            {
+                "prop1": 999,
+                "prop2": "999",
+                "child_config": {
+                    "grand_child_config": {"prop1": 0.999,},
+                    "prop1": None,
+                },
+            },
+        )
+        self.assertDictEqual(
+            self._parent.as_flat_dict(),
+            {
+                "prop1": 999,
+                "prop2": "999",
+                "child_config.grand_child_config.prop1": 0.999,
+                "child_config.prop1": None,
+            },
+        )
 
 
-def test_it(parent_config: ParentConfig) -> None:
-    assert parent_config.as_dict() == {
-        "prop1": 999,
-        "prop2": "999",
-        "child_config": {"grand_child_config": {"prop1": 0.999,}, "prop1": None},
-    }
-    assert parent_config.as_flat_dict() == {
-        "prop1": 999,
-        "prop2": "999",
-        "child_config.grand_child_config.prop1": 0.999,
-        "child_config.prop1": None,
-    }
-
-    with pytest.raises(Exception):
-        parent_config.asdfadsf = 4
+if __name__ == "__main__":
+    unittest.main()

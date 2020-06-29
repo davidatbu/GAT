@@ -16,11 +16,13 @@ from pytorch_lightning.trainer import Trainer
 from torch import Tensor
 from torch.utils.data import DataLoader
 
+import Gat.data.utils
+from Gat import configs
 from Gat import data
 from Gat import utils
-from Gat.config import base as config
 from Gat.loggers.wandb_logger import WandbLogger  # type: ignore [attr-defined]
 from Gat.neural import models
+
 
 # from pytorch_lightning.loggers import TensorBoardLogger
 
@@ -39,7 +41,7 @@ class OneBatch(T.NamedTuple):
 
 class LitGatForSequenceClassification(LightningModule):
     def __init__(
-        self, all_config: config.EverythingConfig,
+        self, all_config: configs.EverythingConfig,
     ):
         super().__init__()
         self._all_config = all_config
@@ -53,7 +55,7 @@ class LitGatForSequenceClassification(LightningModule):
     def _setup_data(self) -> None:
         preprop_config = self._all_config.preprop
 
-        datasets, txt_srcs, word_vocab = data.load_splits(
+        dataset_per_split, txt_src_per_split, word_vocab = data.utils.load_splits(
             unk_thres=preprop_config.unk_thres,
             sent2graph_name=preprop_config.sent2graph_name,
             dataset_dir=Path(preprop_config.dataset_dir),
@@ -61,30 +63,30 @@ class LitGatForSequenceClassification(LightningModule):
             splits=["train", "val"],
         )
 
-        for key, dataset in datasets.items():
-            dataset = data.ConnectToClsDataset(dataset)
+        for key, dataset in dataset_per_split.items():
+            dataset = data.datasets.ConnectToClsDataset(dataset)
             if self._all_config.preprop.undirected:
-                dataset = data.UndirectedDataset(dataset)
-            datasets[key] = dataset
+                dataset = data.datasets.UndirectedDataset(dataset)
+            dataset_per_split[key] = dataset
 
-        self._datasets = datasets
-        self._txt_srcs = txt_srcs
-        self._word_vocab: data.BasicVocab = word_vocab
+        self._dataset_per_split = dataset_per_split
+        self._txt_src_per_split = txt_src_per_split
+        self._word_vocab: data.vocabs.BasicVocab = word_vocab
 
         # Set dataset dependent configuration
-        self._all_config.model.dataset_dep = config.GATForSequenceClassificationDatasetDepConfig(
-            num_classes=len(self._datasets["train"].vocab.labels.all_lbls),
-            num_edge_types=len(self._datasets["train"].id2edge_type),
+        self._all_config.model.dataset_dep = configs.GATForSequenceClassificationDatasetDepConfig(
+            num_classes=len(self._dataset_per_split["train"].vocab.labels.all_lbls),
+            num_edge_types=len(self._dataset_per_split["train"].id2edge_type),
         )
 
     def _setup_model(self) -> None:
         model_config = self._all_config.model
 
         if model_config.node_embedding_type == "pooled_bert":
-            sub_word_vocab: T.Optional[data.Vocab] = data.BertVocab()
+            sub_word_vocab: T.Optional[data.vocabs.Vocab] = data.vocabs.BertVocab()
         elif model_config.node_embedding_type == "bpe":
             assert model_config.bpe_vocab_size is not None
-            sub_word_vocab = data.BPEVocab(
+            sub_word_vocab = data.vocabs.BPEVocab(
                 vocab_size=model_config.bpe_vocab_size,
                 load_pretrained_embs=True,
                 embedding_dim=model_config.embedding_dim,  # type: ignore [arg-type]
@@ -118,7 +120,7 @@ class LitGatForSequenceClassification(LightningModule):
         lsnodeid2wordid: T.List[T.List[int]]
 
         lslsedge, lslsedge_type, lslsimp_node, lsnodeid2wordid = [
-            list(tup_graph_attr) for tup_graph_attr in zip(*lsgraph)
+            list(tup_graph_attr) for tup_graph_attr in zip(*lsgraph)  # type: ignore
         ]
         word_ids: torch.Tensor = self._word_vocab.prepare_for_embedder(
             lsnodeid2wordid, self._gat_model.word_embedder
@@ -156,7 +158,7 @@ class LitGatForSequenceClassification(LightningModule):
 
     def train_dataloader(self) -> DataLoader[OneBatch]:
         res = DataLoader(
-            dataset=self._datasets["train"],
+            dataset=self._dataset_per_split["train"],
             collate_fn=self._collate_fn,
             batch_size=self._trainer_config.train_batch_size,
             num_workers=8,
@@ -166,14 +168,15 @@ class LitGatForSequenceClassification(LightningModule):
 
     def val_dataloader(self) -> T.List[DataLoader[OneBatch]]:
         val_dataloader = DataLoader(
-            self._datasets["val"],
+            self._dataset_per_split["val"],
             collate_fn=self._collate_fn,
             batch_size=self._trainer_config.eval_batch_size,
             num_workers=8,
         )
 
-        cut_train_dataset = data.CutDataset(
-            self._datasets["train"], total_len=len(self._datasets["val"])
+        cut_train_dataset = data.datasets.CutDataset(
+            self._dataset_per_split["train"],
+            total_len=len(self._dataset_per_split["val"]),
         )
         cut_train_dataloader = DataLoader(
             cut_train_dataset,
@@ -267,7 +270,7 @@ class LitGatForSequenceClassification(LightningModule):
             logits=val_logits,
             true_=val_true,
             ds=val_dataset,
-            txt_src=self._txt_srcs[self._val_name],
+            txt_src=self._txt_src_per_split[self._val_name],
         )
 
     def analyze_predict(
@@ -310,11 +313,11 @@ class LitGatForSequenceClassification(LightningModule):
 
 
 def main() -> None:
-    all_config = config.EverythingConfig(
-        trainer=config.TrainerConfig(
+    all_config = configs.EverythingConfig(
+        trainer=configs.TrainerConfig(
             lr=2e-5, train_batch_size=128, eval_batch_size=128, epochs=40,
         ),
-        preprop=config.PreprocessingConfig(
+        preprop=configs.PreprocessingConfig(
             undirected=True,
             # dataset_dir="actual_data/SST-2_tiny",
             dataset_dir="actual_data/SST-2_small",
@@ -322,10 +325,11 @@ def main() -> None:
             # dataset_dir="actual_data/glue_data/SST-2",
             # dataset_dir="actual_data/paraphrase/paws_small",
             sent2graph_name="srl",
+            unk_thres=None,
         ),
-        model=config.GATForSequenceClassificationConfig(
+        model=configs.GATForSequenceClassificationConfig(
             embedding_dim=768,
-            gat_layered=config.GATLayeredConfig(
+            gat_layered=configs.GATLayeredConfig(
                 num_heads=12, intermediate_dim=768, feat_dropout_p=0.3, num_layers=4,
             ),
             node_embedding_type="pooled_bert",

@@ -1,40 +1,66 @@
+import abc
 import logging
+import typing as T
 from multiprocessing import Process
 from multiprocessing import Queue
 from pprint import pformat
-from typing import Any
 from typing import Dict
 from typing import List
-from typing import Optional
-from typing import Set
-from typing import Tuple
-from typing import TYPE_CHECKING
-from typing import Union
 
+import spacy  # type: ignore
 import torch
 from allennlp.predictors.predictor import Predictor  # type: ignore
 from allennlp_models import structured_prediction  # type: ignore # noqa: # the SRL model doesn't get  "registered"  the Predictor class if we don't import this.
+from spacy.tokens import Doc  # type: ignore
 from typing_extensions import Literal
 
-from ..utils.base import Edge
-from ..utils.base import EdgeType
-from ..utils.base import Node
-from ..utils.base import Graph
-from ..utils.base import Slice
-from .base import SentenceToGraph
+from Gat import utils
+
+logging.basicConfig()
+logger = logging.getLogger(__name__)
 
 
-logger = logging.getLogger("__main__")
+V = T.TypeVar("V")
 
-if TYPE_CHECKING:  # painful type checking
-    task_queue_t = Queue[Tuple[int, Union[Dict[str, Any], Literal["STOP"]]]]
-    done_queue_t = Queue[Tuple[int, Graph]]
+
+class SentenceToGraph(abc.ABC):
+    @property
+    @abc.abstractmethod
+    def id2edge_type(self) -> T.List[str]:
+        pass
+
+    @property
+    @abc.abstractmethod
+    def edge_type2id(self) -> T.Dict[str, int]:
+        pass
+
+    @abc.abstractmethod
+    def __repr__(self) -> str:
+        pass
+
+    def batch_to_graph(self, lslsword: T.List[T.List[str]]) -> T.List[utils.Graph]:
+        return [self.to_graph(lsword) for lsword in lslsword]
+
+    @abc.abstractmethod
+    def to_graph(self, lsword: T.List[str]) -> utils.Graph:
+        pass
+
+    def init_workers(self) -> None:
+        pass
+
+    def finish_workers(self) -> None:
+        pass
+
+
+if T.TYPE_CHECKING:  # painful type checking
+    task_queue_t = Queue[T.Tuple[int, T.Union[T.Dict[str, T.Any], Literal["STOP"]]]]
+    done_queue_t = Queue[T.Tuple[int, utils.Graph]]
 else:
     task_queue_t = done_queue_t = Queue
 
-# Belongs better in SRLSentenceToGraph, but to amek it easy to use multiprocessing
+# Belongs better in SRLSentenceToutils.Graph, but to amek it easy to use multiprocessing
 # later, we have it as global
-_id2role: List[str] = [
+_id2role: T.List[str] = [
     "ARG0",
     "ARG1",
     "ARG2",
@@ -103,16 +129,16 @@ _id2role: List[str] = [
     "R-ARGM-TMP",
     "V",
 ]
-_role2id: Dict[str, int] = {role: i for i, role in enumerate(_id2role)}
+_role2id: T.Dict[str, int] = {role: i for i, role in enumerate(_id2role)}
 
 
 class SRLSentenceToGraph(SentenceToGraph):
     @property
-    def id2edge_type(self) -> List[str]:
+    def id2edge_type(self) -> T.List[str]:
         return _id2role
 
     @property
-    def edge_type2id(self) -> Dict[str, int]:
+    def edge_type2id(self) -> T.Dict[str, int]:
         return _role2id
 
     def __init__(self, use_workers: bool = True) -> None:
@@ -145,11 +171,11 @@ class SRLSentenceToGraph(SentenceToGraph):
     def __repr__(self) -> str:
         return "BSrl"
 
-    def to_graph(self, lsword: List[str]) -> Graph:
+    def to_graph(self, lsword: T.List[str]) -> utils.Graph:
         srl_resp = self.allen.predict(" ".join(lsword))
         return _srl_resp_to_graph(srl_resp)
 
-    def batch_to_graph(self, lslsword: List[List[str]]) -> List[Graph]:
+    def batch_to_graph(self, lslsword: T.List[T.List[str]]) -> T.List[utils.Graph]:
         req_json = [{"sentence": " ".join(lsword)} for lsword in lslsword]
         lssrl_resp = self.allen.predict_batch_json(req_json)
         if not self.use_workers:
@@ -168,7 +194,7 @@ class SRLSentenceToGraph(SentenceToGraph):
         for i in range(self.num_workers):
             self.task_queue.put((999, "STOP"))
 
-    def draw_graph(self, lsword: List[str]) -> None:
+    def draw_graph(self, lsword: T.List[str]) -> None:
         import matplotlib.pyplot as plt  # type: ignore
         import networkx as nx  # type: ignore
 
@@ -181,7 +207,7 @@ class SRLSentenceToGraph(SentenceToGraph):
         }
         lsnode_color = ["b" if i in lshead_node else "r" for i in lsnode]
 
-        G = nx.Graph()
+        G = nx.utils.Graph()
         G.add_nodes_from(lsnode)
         G.add_edges_from(lsedge)
 
@@ -200,28 +226,34 @@ class SRLSentenceToGraph(SentenceToGraph):
         plt.show()
 
 
-def _get_args_length(pred_and_args: Tuple[Node, List[Tuple[EdgeType, Slice]]]) -> int:
+def _get_args_length(
+    pred_and_args: T.Tuple[utils.Node, T.List[T.Tuple[utils.EdgeType, utils.Slice]]]
+) -> int:
     if len(pred_and_args[1]) == 0:
         return 0
     _, all_slices = zip(*pred_and_args[1])
-    all_slice_end_points: List[Node] = [i for slice_ in all_slices for i in slice_]
+    all_slice_end_points: T.List[utils.Node] = [
+        i for slice_ in all_slices for i in slice_
+    ]
     return max(all_slice_end_points) - min(all_slice_end_points)
 
 
-def _srl_resp_to_graph(srl_resp: Dict[str, Any]) -> Graph:
+def _srl_resp_to_graph(srl_resp: T.Dict[str, T.Any]) -> utils.Graph:
     logger.debug(pformat(srl_resp, indent=2))
     # Sample response
     #         # Assert we had the same tokenization
 
     # To avoid "connections that skip levels", we need this
     # TTO get the "head" nodes, gotta keep track of which words are not head
-    lspred_and_args: List[Tuple[Node, List[Tuple[EdgeType, Slice]]]] = []
+    lspred_and_args: T.List[
+        T.Tuple[utils.Node, T.List[T.Tuple[utils.EdgeType, utils.Slice]]]
+    ] = []
     for srl_desc in srl_resp["verbs"]:
 
-        cur_role: Optional[str] = None
-        cur_beg: Optional[int] = None
+        cur_role: T.Optional[str] = None
+        cur_beg: T.Optional[int] = None
 
-        role2slice: Dict[str, Tuple[int, int]] = {}
+        role2slice: T.Dict[str, T.Tuple[int, int]] = {}
         for i, tag in enumerate(srl_desc["tags"]):
             if tag[0] in ["O", "B"]:
                 if cur_beg is not None:  # We *just* ended a role
@@ -259,25 +291,27 @@ def _srl_resp_to_graph(srl_resp: Dict[str, Any]) -> Graph:
         if not pred_slice[1] - pred_slice[0] == 1:
             logger.warning(f"Whaaaat, propbank has multiword predicates? {srl_desc}")
             continue
-        pred_node: Node = pred_slice[0]
+        pred_node: utils.Node = pred_slice[0]
 
         # Slightly restructure by converting roles to ids,
         # and placing the predicate as a node of it's own
-        lsedge_type_and_arg: List[Tuple[EdgeType, Slice]] = []
+        lsedge_type_and_arg: T.List[T.Tuple[utils.EdgeType, utils.Slice]] = []
         for role, arg_slice in role2slice.items():
             role_id = _role2id[role]
             lsedge_type_and_arg.append((role_id, arg_slice))
-        pred_and_args: Tuple[Node, List[Tuple[EdgeType, Slice]]] = (
+        pred_and_args: T.Tuple[
+            utils.Node, T.List[T.Tuple[utils.EdgeType, utils.Slice]]
+        ] = (
             pred_node,
             lsedge_type_and_arg,
         )
         lspred_and_args.append(pred_and_args)
 
-    lsedge: List[Edge] = []
-    lsedge_type: List[EdgeType] = []
+    lsedge: T.List[utils.Edge] = []
+    lsedge_type: T.List[utils.EdgeType] = []
 
     # Begin building graph from smallest predicate structure
-    setnode: Set[Node] = set(range(len(srl_resp["words"])))
+    setnode: T.Set[utils.Node] = set(range(len(srl_resp["words"])))
     lspred_and_args.sort(key=_get_args_length)
     for pred_and_args in lspred_and_args:
         pred_node = pred_and_args[0]
@@ -288,11 +322,11 @@ def _srl_resp_to_graph(srl_resp: Dict[str, Any]) -> Graph:
                     lsedge_type.append(edge_type)
                     setnode.remove(arg_node)
 
-    # Nodes that had no "parent" argument
+    # utils.Nodes that had no "parent" argument
     lshead_node = list(sorted(setnode))
 
     # The nodeid2wordid is None
-    return Graph(lsedge, lsedge_type, lshead_node, None)
+    return utils.Graph(lsedge, lsedge_type, lshead_node, None)
 
 
 def _srl_resp_to_graph_worker(
@@ -303,3 +337,51 @@ def _srl_resp_to_graph_worker(
             break
         sentgraph = _srl_resp_to_graph(srl_resp)
         done_queue.put((idx, sentgraph))
+
+
+class DepSentenceToGraph(SentenceToGraph):
+    def __init__(self, spacy_mdl: str = "en_core_web_sm") -> None:
+        self._spacy_mdl = spacy_mdl
+        self._nlp = spacy.load(self._spacy_mdl, disable=["tagger", "ner"])
+
+        self._id2edge_type: List[str] = self._nlp.meta["labels"]["parser"]
+        self._edge_type2id = {
+            edge_type: id_ for id_, edge_type in enumerate(self._id2edge_type)
+        }
+
+    def __repr__(self) -> str:
+        return f"DepS2G_{self._spacy_mdl}"
+
+    @property
+    def edge_type2id(self) -> Dict[str, int]:
+        return self._edge_type2id
+
+    @property
+    def id2edge_type(self) -> List[str]:
+        return self._id2edge_type
+
+    def to_graph(self, lsword: List[str]) -> utils.Graph:
+        sent = " ".join(lsword)
+        doc: Doc = self._nlp(sent)
+
+        lsedge: utils.EdgeList = []
+        lsedge_type: utils.EdgeTypeList = []
+        lsimp_node: utils.NodeList = []
+
+        for i, token in enumerate(doc):
+            assert i == token.i
+            if token.dep_ == "ROOT":
+                assert token.head == token
+                lsimp_node.append(token.i)
+            else:
+                lsedge.append((token.i, token.head.i))
+                lsedge_type.append(self.edge_type2id[token.dep_])
+
+        assert lsimp_node != []
+
+        return utils.Graph(
+            lsedge=lsedge,
+            lsedge_type=lsedge_type,
+            lsimp_node=lsimp_node,
+            nodeid2wordid=None,
+        )

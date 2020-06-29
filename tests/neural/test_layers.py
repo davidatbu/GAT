@@ -5,10 +5,8 @@ first.
 """
 from __future__ import annotations
 
-import tempfile
 import typing as T
 import unittest
-from pathlib import Path
 
 import torch
 from torch import nn
@@ -34,7 +32,7 @@ class TestGraphMultiHeadAttention(
             device=self._device,
         )
         # (B, L, E)
-        self._batched_adj: torch.BoolTensor = (
+        self._batched_adj = (
             torch.randn(
                 [
                     self._all_config.trainer.train_batch_size,

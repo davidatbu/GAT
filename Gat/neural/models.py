@@ -5,17 +5,17 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from ..config.base import GATForSequenceClassificationConfig
-from Gat import data
+from Gat import configs
+from Gat.data import vocabs
 from Gat.neural import layers
 
 
 class GATForSequenceClassification(nn.Module):  # type: ignore
     def __init__(
         self,
-        config: GATForSequenceClassificationConfig,
-        word_vocab: data.BasicVocab,
-        sub_word_vocab: T.Optional[data.Vocab] = None,
+        config: configs.GATForSequenceClassificationConfig,
+        word_vocab: vocabs.BasicVocab,
+        sub_word_vocab: T.Optional[vocabs.Vocab] = None,
     ):
         """
 

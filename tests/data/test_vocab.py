@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 
 from Gat import data
-from Gat.data.tokenizers.spacy import WrappedSpacyTokenizer
+from Gat.data.tokenizers import WrappedSpacyTokenizer
 from Gat.testing_utils import TempDirMixin
 
 
@@ -10,7 +10,7 @@ class TestBasicVocab(TempDirMixin, unittest.TestCase):
     def setUp(self) -> None:
         """."""
         super().setUp()
-        self._txt_src = data.FromIterableTextSource(
+        self._txt_src = data.sources.FromIterableTextSource(
             [
                 (["Love never fails.", "Love overcomes all things."], "yes"),
                 (["Guard your heart.", "From his heart, living waters flow."], "no"),
@@ -23,7 +23,7 @@ class TestBasicVocab(TempDirMixin, unittest.TestCase):
         """."""
 
     def test_with_unk_thres(self) -> None:
-        vocab = data.BasicVocab(
+        vocab = data.vocabs.BasicVocab(
             txt_src=self._txt_src,
             tokenizer=self._tokenizer,
             cache_dir=Path(self._temp_dir),
@@ -45,7 +45,7 @@ class TestBasicVocab(TempDirMixin, unittest.TestCase):
         assert set_id2word == expected_setid2word
 
     def test_without_unk_thres(self) -> None:
-        vocab = data.BasicVocab(
+        vocab = data.vocabs.BasicVocab(
             txt_src=self._txt_src,
             tokenizer=self._tokenizer,
             cache_dir=Path(self._temp_dir),
@@ -67,7 +67,7 @@ class TestBPEVocab(unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
 
-        self._vocab = data.BPEVocab(
+        self._vocab = data.vocabs.BPEVocab(
             25000, load_pretrained_embs=True, embedding_dim=300, lower_case=True
         )
 

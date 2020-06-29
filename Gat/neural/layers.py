@@ -16,8 +16,8 @@ from transformers import AutoConfig
 from transformers import AutoModel
 from transformers import BertModel
 
-from Gat import data
-from Gat.config import GATLayeredConfig
+from Gat import configs
+from Gat.data import vocabs
 
 
 logger = logging.getLogger("__main__")
@@ -520,8 +520,8 @@ class BasicEmbedder(Embedder):
 class ReconcilingEmbedder(Embedder):
     def __init__(
         self,
-        sub_word_vocab: data.Vocab,
-        word_vocab: data.Vocab,
+        sub_word_vocab: vocabs.Vocab,
+        word_vocab: vocabs.Vocab,
         sub_word_embedder: Embedder,
     ) -> None:
         """Pool over subword embeddings.
@@ -761,7 +761,7 @@ class PositionalEmbedder(Embedder):
 class GATLayered(nn.Module):  # type: ignore
     def __init__(
         self,
-        config: GATLayeredConfig,
+        config: configs.GATLayeredConfig,
         lsnode_feature_embedder: T.List[Embedder],
         key_edge_feature_embedder: T.Optional[BasicEmbedder],
         value_edge_feature_embedder: T.Optional[BasicEmbedder],

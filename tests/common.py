@@ -1,6 +1,6 @@
 import torch
 
-from Gat import config
+from Gat import configs
 from Gat import testing_utils
 
 
@@ -30,22 +30,24 @@ class EverythingConfigMixin(TestMixin):
     @testing_utils.debug_on()
     def setUp(self) -> None:
 
-        self._all_config = config.EverythingConfig(
-            config.TrainerConfig(
+        self._all_config = configs.EverythingConfig(
+            configs.TrainerConfig(
                 lr=1e-3,
                 epochs=99,
                 train_batch_size=3,
                 eval_batch_size=2,
                 use_cuda=False,
             ),
-            preprop=config.PreprocessingConfig(
+            preprop=configs.PreprocessingConfig(
                 undirected=True,
                 dataset_dir="actual_data/SST-2_tiny",
                 sent2graph_name="dep",
                 unk_thres=None,
             ),
-            model=config.GATForSequenceClassificationConfig(
-                config.GATLayeredConfig(num_heads=2, intermediate_dim=20, num_layers=3),
+            model=configs.GATForSequenceClassificationConfig(
+                configs.GATLayeredConfig(
+                    num_heads=2, intermediate_dim=20, num_layers=3
+                ),
                 use_pretrained_embs=False,
                 embedding_dim=300,
                 node_embedding_type="bpe",
