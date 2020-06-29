@@ -315,7 +315,7 @@ class LitGatForSequenceClassification(LightningModule):
 def main() -> None:
     all_config = configs.EverythingConfig(
         trainer=configs.TrainerConfig(
-            lr=2e-5, train_batch_size=128, eval_batch_size=128, epochs=40,
+            lr=1e-3, train_batch_size=512, eval_batch_size=512, epochs=40,
         ),
         preprop=configs.PreprocessingConfig(
             undirected=True,
@@ -324,15 +324,16 @@ def main() -> None:
             # dataset_dir="actual_data/SST-2",
             # dataset_dir="actual_data/glue_data/SST-2",
             # dataset_dir="actual_data/paraphrase/paws_small",
-            sent2graph_name="srl",
+            sent2graph_name="dep",
             unk_thres=None,
         ),
         model=configs.GATForSequenceClassificationConfig(
-            embedding_dim=768,
+            embedding_dim=300,
             gat_layered=configs.GATLayeredConfig(
-                num_heads=12, intermediate_dim=768, feat_dropout_p=0.3, num_layers=4,
+                num_heads=5, intermediate_dim=300, feat_dropout_p=0.3, num_layers=12,
             ),
-            node_embedding_type="pooled_bert",
+            node_embedding_type="bpe",
+            bpe_vocab_size=25000,
             use_edge_features=True,
             dataset_dep=None,
             use_pretrained_embs=True,
