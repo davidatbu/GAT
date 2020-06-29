@@ -167,12 +167,14 @@ class PreprocessingConfig(Config):
         undirected: bool,
         dataset_dir: str,
         sent2graph_name: TT.Literal["dep", "srl"],
+        lower_case: bool = True,
         unk_thres: T.Optional[int] = 1,
     ) -> None:
         self.sent2graph_name = sent2graph_name
         self.dataset_dir = dataset_dir
         self.undirected = undirected
         self.unk_thres = unk_thres
+        self.lower_case = lower_case
         super().__init__()
 
 

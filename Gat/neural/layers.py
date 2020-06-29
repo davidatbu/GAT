@@ -18,6 +18,7 @@ from transformers import BertModel
 
 from Gat import configs
 from Gat.data import vocabs
+from Gat.data.tokenizers import Tokenizer
 
 
 logger = logging.getLogger("__main__")
@@ -395,6 +396,55 @@ class Embedder(nn.Module, abc.ABC):  # type: ignore
         """Maximum length of a sequence that can be outputted."""
         pass
 
+    def prepare_for_embedder(
+        self,
+        lslstok_id: T.List[T.List[int]],
+        vocab: vocabs.Vocab,
+        device: torch.device = torch.device("cpu"),
+    ) -> torch.Tensor:
+        """Pad/truncate tokens, convert them to torch tensors and move them to device.
+
+        The padding token is `self.padding_tok_id`. The length of the sequence after
+        padding/truncating will be equal to the longest sequence in `lslstok_id` if
+        `seq_len` is `None`.
+
+        Args:
+            lslstok_id:
+            embedder:
+            device:
+
+        Returns:
+            tok_ids: (B, L)
+        """
+        seq_len = max(map(len, lslstok_id))
+        if self.max_seq_len is not None and self.max_seq_len > seq_len:
+            seq_len = self.max_seq_len
+
+        padding_tok_id = vocab.get_tok_id(vocab.padding_tok)
+        padded_lslstok_id = [
+            lstok_id[:seq_len] + [padding_tok_id] * max(0, seq_len - len(lstok_id))
+            for lstok_id in lslstok_id
+        ]
+        tok_ids: torch.Tensor = torch.tensor(
+            padded_lslstok_id, dtype=torch.long, device=device,
+        )
+        # (B, L)
+        return tok_ids
+
+    def strip_after_embedder(self, embs: torch.Tensor) -> torch.Tensor:
+        """Strip special tokens after passing through embedder.
+
+        Currently, we use this only to remove the [cls] token from BERT. (We don't even
+        remove the [sep] token with it).
+
+        Args:
+            embs: (B, L, E)
+
+        Returns:
+            embs: (B, L, E)
+        """
+        return embs
+
 
 class BertEmbedder(Embedder):
     _model_name: T.Literal["bert-base-uncased"] = "bert-base-uncased"
@@ -453,6 +503,65 @@ class BertEmbedder(Embedder):
     def max_seq_len(self) -> int:
         """Look at superclass doc."""
         return self._model.config.max_position_embeddings
+
+    def prepare_for_embedder(  # type: ignore[override]
+        self,
+        lslstok_id: T.List[T.List[int]],
+        vocab: vocabs.BertVocab,
+        device: torch.device = torch.device("cpu"),
+    ) -> torch.Tensor:
+        """Pad/truncate tokens, convert them to torch tensors and move them to device.
+
+        This adds [cls], [sep], and obviously [pad] in the correct spots.
+        The length of the sequence after padding/truncating will be equal to the longest
+        sequence in `lslstok_id`, or embedder.max_seq_len, whichever is smaller.
+
+        Args:
+            lslstok_id:
+            embedder:
+            device:
+
+        Returns:
+            tok_ids: (B, L)
+        """
+        num_special_tokens = 2  # CLS and SEP
+        non_special_tok_seq_len = max(map(len, lslstok_id))
+
+        if (
+            self.max_seq_len is not None
+            and non_special_tok_seq_len > self.max_seq_len - num_special_tokens
+        ):
+            non_special_tok_seq_len = self.max_seq_len - num_special_tokens
+
+        cls_tok_id = vocab.get_tok_id(vocab.cls_tok)
+        sep_tok_id = vocab.get_tok_id(vocab.sep_tok)
+        padding_tok_id = vocab.get_tok_id(vocab.padding_tok)
+        padded_lslstok_id = [
+            [cls_tok_id]
+            + lstok_id[:non_special_tok_seq_len]
+            + [sep_tok_id]
+            + [padding_tok_id] * max(0, non_special_tok_seq_len - len(lstok_id))
+            for lstok_id in lslstok_id
+        ]
+        tok_ids: torch.Tensor = torch.tensor(
+            padded_lslstok_id, dtype=torch.long, device=device,
+        )
+        # (B, L)
+
+        return tok_ids
+
+    def strip_after_embedder(self, embs: torch.Tensor) -> torch.Tensor:
+        """Look at superclass doc.
+
+        Args:
+            embs: (B, L, E)
+
+        Returns:
+            embs: (B, L, E)
+        """
+        stripped = embs[:, 1:]
+        # (B, L, E)
+        return stripped
 
 
 class BasicEmbedder(Embedder):
@@ -621,14 +730,14 @@ class ReconcilingEmbedder(Embedder):
             lslssubword_count.append(subword_counts)
             lslssubwordid.append(lssubwordid)
 
-        prepared_subwordids = self._sub_word_vocab.prepare_for_embedder(
+        prepared_subwordids = self._sub_word_embedder.prepare_for_embedder(
             lslssubwordid,
-            embedder=self._sub_word_embedder,
+            vocab=self._sub_word_vocab,
             device=next(self.parameters()).device,
         )
 
         with_special_tok_subword_embs = self._sub_word_embedder(prepared_subwordids)
-        subword_embs = self._sub_word_vocab.strip_after_embedder(
+        subword_embs = self._sub_word_embedder.strip_after_embedder(
             with_special_tok_subword_embs
         )
 
@@ -872,6 +981,147 @@ class GATLayered(nn.Module):  # type: ignore
         return super().__call__(  # type: ignore
             node_ids=node_ids, batched_adj=batched_adj, edge_types=edge_types
         )
+
+
+if T.TYPE_CHECKING:
+    nnModule = nn.Module[torch.Tensor]
+else:
+    nnModule = nn.Module
+
+
+class TokenizingReconciler(nnModule):
+    def __init__(
+        self,
+        sub_word_vocab: vocabs.Vocab,
+        word_tokenizer: Tokenizer,
+        sub_word_embedder: Embedder,
+    ) -> None:
+        """Pool over subword embeddings.
+
+        Args:
+            sub_word_vocab: We access `sub_word_vocab.tokenizer` and
+                `sub_word_vocab.padding_tok_id`.
+            word_tokenizer:
+            sub_word_embedder: We use it to get subword embeddings, and access
+                `sub_.wrod_embedder.max_seq_len`.
+        """
+        super().__init__()
+        self._sub_word_vocab = sub_word_vocab
+        self._word_tokenizer = word_tokenizer
+        self._sub_word_embedder = sub_word_embedder
+
+    def forward(self, lstxt: T.List[str]) -> torch.Tensor:
+        """Tokenize using the two tokenizers, pool over subwords to create word embedding.
+
+        Args:
+            lstxt: A list of sentences.
+        Returns:
+            embedding: (B, L, E)
+                       B = len(lstxt)
+                       L is computed like this:
+                       The sentences are tokenized by self.word_vocab.tokenizer, and
+                       truncated to the last word whose complete sub word tokenization
+                       "fits inside" the maximum number of sub word tokens allowed by
+                       `sub_word_embedder` per sequence.
+                       L is the number of words in the sentence with the most word
+                       tokens after the truncation described above.
+
+                       For example,
+
+                       sent = "love embeddings"
+                       sub_word_tokenization = [ "love", "embed", "#dings" ]
+                       word_tokenization = [ "love", "embeddings" ]
+                       sub_word_embedder.max_seq_len == 2 # True
+                       L == 1 # True, since "embeddings" doesn't fit within 2 sub word
+                              # tokens
+        """
+        lswords = self._word_tokenizer.batch_tokenize(lstxt)
+        lssubwordids_per_word = [
+            [self._sub_word_vocab.tokenize_and_get_lstok_id(word) for word in words]
+            for words in lswords
+        ]
+        # "Flat" sub word tokenization for each sequence
+        lslssubwordid: T.List[T.List[int]] = []
+        # The number of sub words in each word
+        lssubword_counts: T.List[T.List[int]] = []
+
+        max_subword_seq_len = float("inf")
+        if self._sub_word_embedder.max_seq_len is not None:
+            max_subword_seq_len = float(self._sub_word_embedder.max_seq_len)
+        for subwordids_per_word in lssubwordids_per_word:
+            # "Flatten" to one list
+            subwordids: T.List[int] = []
+            subword_counts: T.List[int] = []
+            for subwordids_for_one_word in subwordids_per_word:
+                # Check if subword tokenization exceeds the limit
+                if len(subwordids) > max_subword_seq_len:
+                    break
+                subwordids.extend(subwordids_for_one_word)
+                subword_counts.append(len(subwordids_for_one_word))
+            lssubword_counts.append(subword_counts)
+            lslssubwordid.append(subwordids)
+
+        subword_ids = torch.tensor(
+            lslssubwordid, dtype=torch.long, device=next(self.parameters()).device
+        )
+        subword_embs = self._sub_word_embedder(subword_ids)
+
+        pooled_word_embs = self.pool_sequences(subword_embs, lssubword_counts)
+        return pooled_word_embs
+
+    def pool_sequences(
+        self, subword_seqs: torch.Tensor, lssubword_counts: T.List[T.List[int]]
+    ) -> torch.Tensor:
+        """Pool over sub word embeddings to yield word embeddings.
+
+        Args:
+            subword_seqs: (B, L, ...)
+            lssubword_counts: The number of subwords within each "word".
+
+        Returns:
+            word_seqs: (B, L, ...)
+                L here will be max([ sum(subword_counts) for subword_counts in
+                lssubword_counts ])
+        """
+        # Check sub word sequences lengths fit within subword_seq.shape
+        max_subword_seq_len = max(
+            [sum(subword_counts) for subword_counts in lssubword_counts]
+        )
+        assert max_subword_seq_len <= subword_seqs.size("L")
+
+        # Figure out the longest word seq length
+        max_word_seq_len = max(map(len, lssubword_counts))
+
+        # Get the padding vector
+        padding_vec = self._sub_word_embedder(
+            torch.tensor(
+                [[self._sub_word_vocab.get_tok_id(self._sub_word_vocab.padding_tok)]]
+            )
+        )
+        padding_vec = padding_vec.squeeze()
+
+        # Word embeddings per seq
+        lsword_seq: T.List[torch.Tensor] = []
+
+        for subword_seq, subword_counts in zip(subword_seqs, lssubword_counts):
+            beg_and_end_indices = itertools.accumulate([0] + subword_counts)
+            beg_iterator, end_iterator = itertools.tee(beg_and_end_indices, 2)
+
+            next(end_iterator)  # Consume the 0 at the beginning
+            word_seq_len = len(subword_counts)
+            word_seq = torch.stack(
+                [
+                    subword_seq[beg:end].mean(dim=0).rename(None)
+                    for beg, end in zip(beg_iterator, end_iterator)
+                ]
+                + [padding_vec] * (max_word_seq_len - word_seq_len)
+            )
+
+            # TODO: Remove
+            assert len(word_seq) == len(subword_counts)
+            lsword_seq.append(word_seq)
+        word_seqs = torch.stack(lsword_seq).rename("B", "L", "E")  # type: ignore
+        return word_seqs
 
 
 if __name__ == "__main__":

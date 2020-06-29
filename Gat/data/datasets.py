@@ -9,6 +9,7 @@ from tqdm import tqdm  # type: ignore
 from Gat.data import sent2graphs
 from Gat.data import vocabs
 from Gat.data.cacheable import Cacheable
+from Gat.data.cacheable import TorchCachingTool
 from Gat.data.sources import TextSource
 from Gat.utils import Graph
 from Gat.utils import GraphExample
@@ -288,10 +289,8 @@ class SentenceGraphDataset(BaseSentenceToGraphDataset[vocabs.BasicVocab], Cachea
         return self._sent2graph.edge_type2id
 
     @property
-    def _cached_attrs(self) -> T.List[str]:
-        return [
-            "_lssentgraph_ex",
-        ]
+    def _cached_attrs(self) -> T.Tuple[T.Tuple[str, TorchCachingTool], ...]:
+        return (("_lssentgraph_ex", TorchCachingTool()),)
 
     def __repr__(self) -> str:
         return (

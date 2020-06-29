@@ -9,6 +9,31 @@ import torch
 logger = logging.getLogger(__name__)
 
 
+class CachingTool(abc.ABC):
+    """A class to abstract away any caching tool."""
+
+    @abc.abstractmethod
+    def load(self, file_: Path) -> T.Any:
+        pass
+
+    @abc.abstractmethod
+    def save(self, obj: T.Any, file_: Path) -> None:
+        pass
+
+
+class TorchCachingTool(CachingTool):
+    """Still generic."""
+
+    def load(self, file_: Path) -> T.Any:
+        with file_.open("rb") as fb:
+            obj = torch.load(fb)  # type: ignore
+        return obj
+
+    def save(self, obj: T.Any, file_: Path) -> None:
+        with file_.open("wb") as fb:
+            torch.save(obj, fb)  # type: ignore
+
+
 class Cacheable(abc.ABC):
     """Support caching anything.
 
@@ -19,8 +44,8 @@ class Cacheable(abc.ABC):
         """Check if a cached version is available."""
         # Use the  repr to create a cache dir
         obj_repr_hash = hashlib.sha1(repr(self).encode()).hexdigest()
-        self.specific_cache_dir = cache_dir / obj_repr_hash
-        self.specific_cache_dir.mkdir(exist_ok=True)
+        self._specific_cache_dir = cache_dir / obj_repr_hash
+        self._specific_cache_dir.mkdir(exist_ok=True)
 
         if self._cached_exists() and not (ignore_cache):
             logger.info(f"{obj_repr_hash} found cached.")
@@ -41,7 +66,7 @@ class Cacheable(abc.ABC):
         pass
 
     @abc.abstractproperty
-    def _cached_attrs(self) -> T.List[str]:
+    def _cached_attrs(self) -> T.Tuple[T.Tuple[str, CachingTool], ...]:
         """List of attributes that will be cached/restored from cache."""
         pass
 
@@ -59,28 +84,25 @@ class Cacheable(abc.ABC):
         return all(
             [
                 self._cache_fp_for_attr(attr_name).exists()
-                for attr_name in self._cached_attrs
+                for attr_name, _ in self._cached_attrs
             ]
         )
 
     def _from_cache(self) -> None:
         """Restore cached attributes."""
-        for attr_name in self._cached_attrs:
+        for attr_name, caching_tool in self._cached_attrs:
             fp = self._cache_fp_for_attr(attr_name)
-
-            with fp.open("rb") as fb:
-                obj = torch.load(fb)  # type: ignore
+            obj = caching_tool.load(fp)
             setattr(self, attr_name, obj)
 
     def _cache_fp_for_attr(self, attr_name: str) -> Path:
         """Return the cache file name for a specific attribute."""
-        return self.specific_cache_dir / f"{attr_name}.torch"
+        return self._specific_cache_dir / f"{attr_name}.torch"
 
     def to_cache(self) -> None:
         """Save cached attributes to cache."""
-        for attr_name in self._cached_attrs:
+        for attr_name, caching_tool in self._cached_attrs:
 
             fp = self._cache_fp_for_attr(attr_name)
             obj = getattr(self, attr_name)
-            with fp.open("wb") as fb:
-                torch.save(obj, fb)  # type: ignore
+            caching_tool.save(obj, fp)

@@ -87,9 +87,11 @@ class LitGatForSequenceClassification(LightningModule):
         elif model_config.node_embedding_type == "bpe":
             assert model_config.bpe_vocab_size is not None
             sub_word_vocab = data.vocabs.BPEVocab(
-                vocab_size=model_config.bpe_vocab_size,
-                load_pretrained_embs=True,
-                embedding_dim=model_config.embedding_dim,  # type: ignore [arg-type]
+                txt_src=self._txt_src_per_split["train"],
+                bpe_vocab_size=model_config.bpe_vocab_size,
+                load_pretrained_embs=False,
+                lower_case=self._all_config.preprop.lower_case,
+                cache_dir=Path(self._all_config.preprop.dataset_dir),
             )
         elif model_config.node_embedding_type == "basic":
             sub_word_vocab = None
@@ -122,8 +124,8 @@ class LitGatForSequenceClassification(LightningModule):
         lslsedge, lslsedge_type, lslsimp_node, lsnodeid2wordid = [
             list(tup_graph_attr) for tup_graph_attr in zip(*lsgraph)  # type: ignore
         ]
-        word_ids: torch.Tensor = self._word_vocab.prepare_for_embedder(
-            lsnodeid2wordid, self._gat_model.word_embedder
+        word_ids: torch.Tensor = self._gat_model.word_embedder.prepare_for_embedder(
+            lsnodeid2wordid, self._word_vocab
         )
         word_ids.requires_grad_(False)
         # (B, L)

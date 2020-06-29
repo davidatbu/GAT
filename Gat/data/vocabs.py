@@ -1,13 +1,16 @@
 import abc
+import io
 import logging
 import typing as T
 from pathlib import Path
 
 import torch
 import typing_extensions as TT
-from bpemb import BPEmb  # type: ignore
+import youtokentome as yttm  # type: ignore[import]
 
 from Gat.data.cacheable import Cacheable
+from Gat.data.cacheable import CachingTool
+from Gat.data.cacheable import TorchCachingTool
 from Gat.data.numerizer import Numerizer
 from Gat.data.sources import TextSource
 from Gat.data.tokenizers import Tokenizer
@@ -67,6 +70,10 @@ class Vocab(Numerizer):
     @property
     def unk_tok(self) -> str:
         return "[unk]"
+
+    @property
+    def padding_tok(self) -> str:
+        return "[pad]"
 
     @abc.abstractproperty
     def vocab_size(self) -> int:
@@ -177,9 +184,12 @@ class BasicVocab(Vocab, Cacheable):
         return txt
 
     @property
-    def _cached_attrs(self) -> T.List[str]:
+    def _cached_attrs(self) -> T.Tuple[T.Tuple[str, CachingTool], ...]:
         """Look at superclass doc."""
-        return ["_id2word", "_labels"]
+        return (
+            ("_id2word", TorchCachingTool()),
+            ("_labels", TorchCachingTool()),
+        )
 
     def get_tok(self, tok_id: int) -> str:
         return self._id2word[tok_id]
@@ -221,7 +231,9 @@ class BasicVocab(Vocab, Cacheable):
 
     @property
     def _lsspecial_tok(self) -> T.List[str]:
-        return [self.padding_tok, self.cls_tok, self.unk_tok]
+        if self._unk_thres is not None:
+            return [self.padding_tok, self.cls_tok, self.unk_tok]
+        return [self.padding_tok, self.cls_tok]
 
     def get_lstok(self, lsword_id: T.List[int]) -> T.List[str]:
         return [self.get_tok(word_id) for word_id in lsword_id]
@@ -233,10 +245,7 @@ class BasicVocab(Vocab, Cacheable):
             self._id2word: List[str]
             self._labels: Labels
         """
-        self._id2word: T.List[str] = [
-            self.padding_tok,
-            self.cls_tok,
-        ]
+        self._id2word: T.List[str] = self._lsspecial_tok[:]
         lslbl: T.List[str] = []
         if self._unk_thres is not None:
             word_counts: T.Counter[str] = T.Counter()
@@ -251,7 +260,6 @@ class BasicVocab(Vocab, Cacheable):
             id2word = [
                 word for word, count in word_counts.items() if count >= self._unk_thres
             ]
-            self._id2word.append(self.unk_tok)
             self._id2word.extend(id2word)
             logger.info(f"Made id2word of length {len(self._id2word)}")
         else:  # self._unk_thres == None
@@ -329,110 +337,103 @@ class BertVocab(Vocab):
         )
         return lstok
 
-    def prepare_for_embedder(
-        self,
-        lslstok_id: T.List[T.List[int]],
-        embedder: layers.Embedder,
-        device: torch.device = torch.device("cpu"),
-    ) -> torch.Tensor:
-        """Pad/truncate tokens, convert them to torch tensors and move them to device.
 
-        This adds [cls], [sep], and obviously [pad] in the correct spots.
-        The length of the sequence after padding/truncating will be equal to the longest
-        sequence in `lslstok_id`, or embedder.max_seq_len, whichever is smaller.
+class BPECachingTool(CachingTool):
+    def load(self, file_: Path) -> yttm.BPE:
+        return yttm.BPE(str(file_.resolve()))
 
-        Args:
-            lslstok_id:
-            embedder:
-            device:
-
-        Returns:
-            tok_ids: (B, L)
-        """
-        num_special_tokens = 2  # CLS and SEP
-        non_special_tok_seq_len = max(map(len, lslstok_id))
-
-        if (
-            embedder.max_seq_len is not None
-            and non_special_tok_seq_len > embedder.max_seq_len - num_special_tokens
-        ):
-            non_special_tok_seq_len = embedder.max_seq_len - num_special_tokens
-
-        cls_tok_id = self.get_tok_id(self.cls_tok)
-        sep_tok_id = self.get_tok_id(self.sep_tok)
-        padding_tok_id = self.get_tok_id(self.padding_tok)
-        padded_lslstok_id = [
-            [cls_tok_id]
-            + lstok_id[:non_special_tok_seq_len]
-            + [sep_tok_id]
-            + [padding_tok_id] * max(0, non_special_tok_seq_len - len(lstok_id))
-            for lstok_id in lslstok_id
-        ]
-        tok_ids: torch.Tensor = torch.tensor(
-            padded_lslstok_id, dtype=torch.long, device=device,
-        )
-        # (B, L)
-
-        return tok_ids
-
-    def strip_after_embedder(self, embs: torch.Tensor) -> torch.Tensor:
-        """Look at superclass doc.
-
-        Args:
-            embs: (B, L, E)
-
-        Returns:
-            embs: (B, L, E)
-        """
-        stripped = embs[:, 1:]
-        # (B, L, E)
-        return stripped
+    def save(self, obj: yttm.BPE, file_: Path) -> None:
+        # A No-op, since the BPE library requires that one had it saved. Just make
+        # sure that it exists.
+        assert file_.exists()
 
 
-class BPEVocab(Vocab):
+class BPEVocab(Vocab, Cacheable):
     def __init__(
         self,
-        vocab_size: TT.Literal[25000],
-        *,
-        # Currently, one MUST load pretrained embs along
-        load_pretrained_embs: TT.Literal[True] = True,
-        embedding_dim: T.Optional[TT.Literal[300]] = 300,
-        lower_case: bool = True,
+        txt_src: TextSource,
+        bpe_vocab_size: int,
+        lower_case: bool,
+        cache_dir: Path,
+        load_pretrained_embs: TT.Literal[False] = False,
+        embedding_dim: T.Optional[int] = None,
+        ignore_cache: bool = False,
+        # Currently, one can't load pretrained embs along
     ):
-        if not load_pretrained_embs:
-            raise NotImplementedError(
-                "load_pretrained_embs must be true for BPE right now."
-            )
-        if load_pretrained_embs and embedding_dim is None:
-            raise ValueError(
-                "must pass embedding_dim if load_pretrained_embs is specified"
-            )
-        self._bpemb = BPEmb(
-            lang="en",
-            vs=vocab_size,
-            dim=embedding_dim,
-            preprocess=False,
-            add_pad_emb=False,
-        )
-
-        assert self._bpemb.vs == vocab_size
-
-        self._vocab_size = vocab_size + len(self._lsspecial_tok)
-        self._lower_case = lower_case
-        self.__tokenizer = WrappedBPETokenizer(self._bpemb)
-
         if load_pretrained_embs:
-            self._pretrained_embs: torch.Tensor = torch.zeros(
-                [self.vocab_size, embedding_dim], dtype=torch.float,
+            raise NotImplementedError(
+                "load_pretrained_embs must be false for BPE right now."
             )
-            self._pretrained_embs[:vocab_size] = torch.from_numpy(self._bpemb.vectors)
+            assert (
+                embedding_dim is not None
+            ), "must pass embedding_dim if load_pretrained_embs is specified"
+        else:
+            assert (
+                embedding_dim is None
+            ), "embedding_dim must not be passed if load_pretrained_embs is False."
 
-        # We add PAD and CLS at the end to avoid further processing the token ids
-        # we get from BPE
-        self._id2word: T.List[str] = self._bpemb.words + self._lsspecial_tok
+        self._txt_src = txt_src
+        self._bpe_vocab_size = bpe_vocab_size
+        self._lower_case = lower_case
+
+        self._padding_tok_id = 0
+        self._unk_tok_id = 1
+        self._cls_tok_id = 2
+
+        Cacheable.__init__(self, cache_dir, ignore_cache)
+
+        self._id2word: T.List[str] = self._bpe.vocab()  # Already contains the special
+        # tokens
+        self._id2word[:3] = ["[pad]", "[unk]", "[cls]"]  # override BPE's specail toks
+
+        self.__tokenizer = WrappedBPETokenizer(self._bpe, repr(self))
+
         self._word2id: T.Dict[str, int] = {
             word: id_ for id_, word in enumerate(self._id2word)
         }
+
+    def __repr__(self) -> str:
+        return "\n".join(
+            [
+                f"{self.__class__}(",
+                f"    txt_src={self._txt_src},",
+                "    bpe_vocab_size=self.bpe_vocab_size,",
+                "    lower_case={self._lower_case}",
+                ")",
+            ]
+        )
+
+    @property
+    def _cached_attrs(self) -> T.Tuple[T.Tuple[str, CachingTool], ...]:
+        return (("_bpe", BPECachingTool()),)
+
+    def process(self) -> None:
+
+        # Prepare txt source for BPE, which requires a file interface
+        # We use ._specific_cache_dir from Cacheable()
+        data_file = self._specific_cache_dir / "bpe_train_file.txt"
+        model_file = self._cache_fp_for_attr(
+            "_bpe"
+        )  # It MUST be this to play nice with Cacheable
+
+        def sent_iterator() -> T.Iterator[str]:
+            for lssent, _ in self._txt_src:
+                for sent in lssent:
+                    yield sent + "\n"
+
+        with data_file.open("w") as f:
+            f.writelines(sent_iterator())
+
+        self._bpe = yttm.BPE.train(
+            str(data_file),
+            str(model_file),
+            vocab_size=self._bpe_vocab_size,
+            # coverage=0.9999,
+            coverage=1,
+            bos_id=self._cls_tok_id,
+            pad_id=self._padding_tok_id,
+            unk_id=self._unk_tok_id,
+        )
 
     def simplify_txt(self, txt: str) -> str:
         if self._lower_case:
@@ -454,23 +455,14 @@ class BPEVocab(Vocab):
         return self._id2word[tok_id]
 
     def get_tok_id(self, tok: str) -> int:
-        if tok not in self._word2id:
-            tok = self.unk_tok
-        return self._word2id[tok]
+        return self._word2id.get(tok, self._unk_tok_id)
 
     def get_lstok_id(self, lsword: T.List[str]) -> T.List[int]:
-        """
-
-        Raises:
-            KeyError: when a token is not in vocab. If you used self.tokenize, this iwll
-            never happen.
-        """
-
         return [self.get_tok_id(word) for word in lsword]
 
     @property
     def vocab_size(self) -> int:
-        return self._vocab_size
+        return len(self._id2word)
 
     def get_lstok(self, lsword_id: T.List[int]) -> T.List[str]:
         return [self.get_tok(word_id) for word_id in lsword_id]
@@ -480,19 +472,20 @@ class BPEVocab(Vocab):
         return [self.padding_tok, self.cls_tok, self.unk_tok]
 
     @property
-    def has_pretrained_embs(self) -> bool:
-        return self._pretrained_embs is not None
+    def pretrained_embs(self) -> torch.Tensor:
+        raise NotImplementedError()
 
     @property
-    def pretrained_embs(self) -> torch.Tensor:
-        if not self.has_pretrained_embs:
-            raise Exception(f"{self.__class__} initialized without pretrained embs.")
-        else:
-            logger.warning(
-                "Note that the CLS token doesn't have a pretrained"
-                "representation, it's initalized to all zeros, just like the PAD token."
-            )
-            return self._pretrained_embs
+    def unk_tok(self) -> str:
+        return self.get_tok(self._unk_tok_id)
+
+    @property
+    def cls_tok(self) -> str:
+        return self.get_tok(self._cls_tok_id)
+
+    @property
+    def padding_tok(self) -> str:
+        return self.get_tok(self._padding_tok_id)
 
 
 __all__ = ["BertVocab", "BPEVocab", "BasicVocab", "Vocab"]
