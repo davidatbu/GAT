@@ -14,7 +14,7 @@ class BPETokenizer(Tokenizer):
         self._pbemb_en = bpemb_en
         self._vocab_size = bpemb_en.vocab_size
 
-    def tokenize(self, txt: str) -> T.List[str]:
+    def _tokenize(self, txt: str) -> T.List[str]:
         return self._pbemb_en.encode(txt)  # type: ignore
 
     def __repr__(self) -> str:

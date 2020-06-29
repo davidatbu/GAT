@@ -7,11 +7,11 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from pytorch_lightning.callbacks.early_stopping import EarlyStopping
-from pytorch_lightning.core.lightning import LightningModule
-from pytorch_lightning.loggers.base import LightningLoggerBase
-from pytorch_lightning.metrics.functional import accuracy
-from pytorch_lightning.trainer import seed_everything
+from pytorch_lightning.callbacks.early_stopping import EarlyStopping  # type: ignore
+from pytorch_lightning.core.lightning import LightningModule  # type: ignore
+from pytorch_lightning.loggers.base import LightningLoggerBase  # type: ignore
+from pytorch_lightning.metrics.functional import accuracy  # type: ignore
+from pytorch_lightning.trainer import seed_everything  # type: ignore
 from pytorch_lightning.trainer import Trainer
 from torch import Tensor
 from torch.utils.data import DataLoader
@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 from Gat import data
 from Gat import utils
 from Gat.config import base as config
-from Gat.loggers.wandb_logger import WandbLogger
+from Gat.loggers.wandb_logger import WandbLogger  # type: ignore [attr-defined]
 from Gat.neural import models
 
 # from pytorch_lightning.loggers import TensorBoardLogger
@@ -54,7 +54,7 @@ class LitGatForSequenceClassification(LightningModule):
         preprop_config = self._all_config.preprop
 
         datasets, txt_srcs, word_vocab = data.load_splits(
-            unk_thres=preprop_config.unk_thres or 1,  # unk_thres is None when BPE/bert
+            unk_thres=preprop_config.unk_thres,
             sent2graph_name=preprop_config.sent2graph_name,
             dataset_dir=Path(preprop_config.dataset_dir),
             lstxt_col=["sentence"],
@@ -81,17 +81,20 @@ class LitGatForSequenceClassification(LightningModule):
         model_config = self._all_config.model
 
         if model_config.node_embedding_type == "pooled_bert":
-            sub_word_vocab: T.Optional[data.BertVocab] = data.BertVocab()
+            sub_word_vocab: T.Optional[data.Vocab] = data.BertVocab()
         elif model_config.node_embedding_type == "bpe":
             assert model_config.bpe_vocab_size is not None
-            assert model_config.embedding_dim == 300  # Let's see where this gets us
             sub_word_vocab = data.BPEVocab(
                 vocab_size=model_config.bpe_vocab_size,
                 load_pretrained_embs=True,
-                embedding_dim=model_config.embedding_dim,  # type: ignore
+                embedding_dim=model_config.embedding_dim,  # type: ignore [arg-type]
             )
-        else:
+        elif model_config.node_embedding_type == "basic":
             sub_word_vocab = None
+        else:
+            raise Exception(
+                "model_config._validate() should have raised an excetpion, actually."
+            )
 
         self._gat_model = models.GATForSequenceClassification(
             model_config, word_vocab=self._word_vocab, sub_word_vocab=sub_word_vocab,

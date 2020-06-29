@@ -17,7 +17,7 @@ class WrappedSpacyTokenizer(base.Tokenizer):
             self._spacy_model_name, disable=["tagger", "parser", "ner"]
         )
 
-    def tokenize(self, txt: str) -> T.List[str]:
+    def _tokenize(self, txt: str) -> T.List[str]:
         spacy_toks = self._tokenizer(txt)
         return [spacy_tok.text for spacy_tok in spacy_toks]
 

@@ -160,15 +160,6 @@ class GATForSequenceClassificationConfig(Config):
         self.bpe_vocab_size = bpe_vocab_size
         super().__init__()
 
-    def _validate(self) -> None:
-        if self.node_embedding_type == "pooled_bert":
-            assert self.use_pretrained_embs, "pooled bert means using pretrained"
-
-        if self.node_embedding_type == "bpe":
-            assert self.bpe_vocab_size is not None
-        else:
-            assert self.bpe_vocab_size is None
-
 
 class PreprocessingConfig(Config):
     def __init__(
@@ -202,3 +193,19 @@ class EverythingConfig(Config):
             assert (
                 self.preprop.unk_thres is None
             ), "why have UNK tokens if we're doing subword tokenization?"
+        elif self.model.node_embedding_type == "basic":
+            assert (
+                self.preprop.unk_thres is not None
+            ), "we need an UNK thres if we're not doing subword tkenizaiton."
+        else:
+            raise ValueError(
+                f"{self.__class__}.model.node_embedding_type is invalid({self.model.node_embedding_type})"
+            )
+
+        if self.model.node_embedding_type == "pooled_bert":
+            assert self.model.use_pretrained_embs, "pooled bert means using pretrained"
+
+        if self.model.node_embedding_type == "bpe":
+            assert self.model.bpe_vocab_size is not None
+        else:
+            assert self.model.bpe_vocab_size is None

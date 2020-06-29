@@ -6,48 +6,61 @@ from Gat.data.tokenizers.spacy import WrappedSpacyTokenizer
 from Gat.testing_utils import TempDirMixin
 
 
-class BasicVocabMixin(TempDirMixin):
+class TestBasicVocab(TempDirMixin, unittest.TestCase):
     def setUp(self) -> None:
         """."""
         super().setUp()
-        txt_src = data.FromIterableTextSource(
+        self._txt_src = data.FromIterableTextSource(
             [
                 (["Love never fails.", "Love overcomes all things."], "yes"),
                 (["Guard your heart.", "From his heart, living waters flow."], "no"),
                 (["Always be on guard.", "Be watchful."], "yes"),
             ]
         )
-        tokenizer = WrappedSpacyTokenizer()
-        self._vocab = data.BasicVocab(
-            txt_src=txt_src,
-            tokenizer=tokenizer,
+        self._tokenizer = WrappedSpacyTokenizer()
+
+    def tearDown(self) -> None:
+        """."""
+
+    def test_with_unk_thres(self) -> None:
+        vocab = data.BasicVocab(
+            txt_src=self._txt_src,
+            tokenizer=self._tokenizer,
             cache_dir=Path(self._temp_dir),
             lower_case=True,
             unk_thres=2,
         )
 
-    def tearDown(self) -> None:
-        """."""
-
-
-class TestBasicVocab(BasicVocabMixin):
-    def test_len(self) -> None:
-        set_id2word = set(self._vocab._id2word)
-        assert len(set_id2word) == len(self._vocab._id2word)
-
-    def test_contents(self) -> None:
         expected_setid2word = {
-            "[CLS]",
-            "[PAD]",
-            "[UNK]",
+            "[cls]",
+            "[pad]",
+            "[unk]",
             "guard",
             "love",
             ".",
             "heart",
             "be",
         }
-        set_id2word = set(self._vocab._id2word)
+        set_id2word = set(vocab._id2word)
         assert set_id2word == expected_setid2word
+
+    def test_without_unk_thres(self) -> None:
+        vocab = data.BasicVocab(
+            txt_src=self._txt_src,
+            tokenizer=self._tokenizer,
+            cache_dir=Path(self._temp_dir),
+            lower_case=True,
+            unk_thres=None,
+        )
+
+        expected_setid2word = {
+            "[cls]",
+            "[pad]",
+        }
+        self.assertSetEqual(set(vocab._id2word), expected_setid2word)
+
+        vocab.get_tok_id("SOMETHINGRANDOM")
+        self.assertSetEqual(set(vocab._id2word), {"[cls]", "SOMETHINGRANDOM", "[pad]",})
 
 
 class TestBPEVocab(unittest.TestCase):

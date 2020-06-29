@@ -1,11 +1,11 @@
+# type: ignore
 """
 Weights and Biases
 ------------------
 """
 import os
-import typing
+import typing as T
 from argparse import Namespace
-from types import ModuleType
 from typing import Any
 from typing import Dict
 from typing import List
@@ -13,20 +13,10 @@ from typing import Optional
 from typing import Union
 
 import torch.nn as nn
-
-wandb: Optional[ModuleType]
-try:
-    import wandb  # type: ignore
-    from wandb.wandb_run import Run  # type: ignore
-
-    _WANDB_AVAILABLE = True
-except ImportError:  # pragma: no-cover
-    wandb = None
-    Run = None
-    _WANDB_AVAILABLE = False
-
-from pytorch_lightning.loggers.base import LightningLoggerBase
-from pytorch_lightning.utilities import rank_zero_only
+import wandb
+from pytorch_lightning.loggers.base import LightningLoggerBase  # type: ignore
+from pytorch_lightning.utilities import rank_zero_only  # type: ignore
+from wandb.wandb_run import Run  # type: ignore
 
 
 class WandbLogger(LightningLoggerBase):
@@ -75,16 +65,11 @@ class WandbLogger(LightningLoggerBase):
         project: Optional[str] = None,
         tags: Optional[List[str]] = None,
         log_model: bool = False,
-        experiment=None,
+        experiment: Run = None,
         entity=None,
         group: Optional[str] = None,
         sync_tensorboard: bool = False,
     ):
-        if not _WANDB_AVAILABLE:
-            raise ImportError(
-                "You want to use `wandb` logger which is not installed yet,"  # pragma: no-cover
-                " install it with `pip install wandb`."
-            )
         super().__init__()
         self._name = name
         self._save_dir = save_dir
@@ -99,7 +84,7 @@ class WandbLogger(LightningLoggerBase):
         self._group = group
         self._sync_tensorboard = sync_tensorboard
 
-    def __getstate__(self):
+    def __getstate__(self) -> T.Dict[str, T.Any]:
         state = self.__dict__.copy()
         # args needed to reload correct experiment
         state["_id"] = self._experiment.id if self._experiment is not None else None
@@ -120,6 +105,7 @@ class WandbLogger(LightningLoggerBase):
             self.logger.experiment.some_wandb_function()
 
         """
+        assert wandb is not None
         if self._experiment is None:
             if self._offline:
                 os.environ["WANDB_MODE"] = "dryrun"
@@ -141,7 +127,9 @@ class WandbLogger(LightningLoggerBase):
                 self.save_dir = self._experiment.dir
         return self._experiment
 
-    def watch(self, model: nn.Module, log: str = "gradients", log_freq: int = 100):
+    def watch(
+        self, model: nn.Module, log: str = "gradients", log_freq: int = 100
+    ) -> None:
         self.experiment.watch(model, log=log, log_freq=log_freq)
 
     @rank_zero_only

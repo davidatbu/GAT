@@ -169,6 +169,7 @@ class Cacheable(abc.ABC):
     def __init__(self, cache_dir: Path, ignore_cache: bool) -> None:
         """Check if a cached version is available."""
         # Use the  repr to create a cache dir
+        ignore_cache = True
         obj_repr_hash = hashlib.sha1(repr(self).encode()).hexdigest()
         self.specific_cache_dir = cache_dir / obj_repr_hash
         self.specific_cache_dir.mkdir(exist_ok=True)
@@ -338,8 +339,8 @@ class Numerizer(abc.ABC):
     def strip_after_embedder(self, embs: torch.Tensor) -> torch.Tensor:
         """Strip special tokens after passing through embedder.
 
-        Currently, we use this only to remove the [CLS] token from BERT. (We don't even
-        remove the [SEP] token with it).
+        Currently, we use this only to remove the [cls] token from BERT. (We don't even
+        remove the [sep] token with it).
 
         Args:
             embs: (B, L, E)
@@ -355,7 +356,7 @@ class Numerizer(abc.ABC):
         # TODO: What about all the other special tokens in Vocab? Why don't they get a
         # property that returns the token, not just the token id?
         # It's not a problem for now, but it's uniuntuitive.
-        return "[PAD]"
+        return "[pad]"
 
 
 class Vocab(Numerizer):
@@ -373,27 +374,40 @@ class Vocab(Numerizer):
         return [self.simplify_txt(txt) for txt in lstxt]
 
     @abc.abstractproperty
-    def tokenizer(self) -> tokenizers.Tokenizer:
-        """Return the tokenizer used to produce this vocabulary."""
+    def _tokenizer(self) -> tokenizers.Tokenizer:
         pass
+
+    def tokenize(self, txt: str) -> T.List[str]:
+        """Vocab.tokenize is different from Tokenizer.tokenize because Vocab.tokenize
+        has access to the special tokesn that should not be "cut across", 
+        """
+        return self._tokenizer.tokenize(txt, lsspecial_tok=self._lsspecial_tok)
+
+    def batch_tokenize(self, lstxt: T.List[str]) -> T.List[T.List[str]]:
+        return [self.tokenize(txt) for txt in lstxt]
 
     def tokenize_and_get_lstok_id(self, txt: str) -> T.List[int]:
         """Convinience function to call tokenize and get tok ids in one."""
-        return self.get_lstok_id(self.tokenizer.tokenize(self.simplify_txt(txt)))
+        return self.get_lstok_id(self.tokenize(self.simplify_txt(txt)))
 
     def batch_tokenize_and_get_lstok_id(
         self, lstxt: T.List[str]
     ) -> T.List[T.List[int]]:
         """Batch version."""
-        return self.get_lslstok_id(self.tokenizer.batch_tokenize(lstxt))
+        return self.get_lslstok_id(self.batch_tokenize(lstxt))
+
+    @abc.abstractproperty
+    def _lsspecial_tok(self) -> T.List[str]:
+        "Things like CLS and PAD that should be preserved in tokenization."
+        pass
 
     @property
     def cls_tok(self) -> str:
-        return "[CLS]"
+        return "[cls]"
 
     @property
     def unk_tok(self) -> str:
-        return "[UNK]"
+        return "[unk]"
 
     @abc.abstractproperty
     def vocab_size(self) -> int:
@@ -439,9 +453,9 @@ class BPEVocab(Vocab):
 
         assert self._bpemb.vs == vocab_size
 
-        self._vocab_size = vocab_size + 2  # One for padding, one for the CLS
+        self._vocab_size = vocab_size + len(self._lsspecial_tok)
         self._lower_case = lower_case
-        self._tokenizer = tokenizers.bpe.BPETokenizer(self._bpemb)
+        self.__tokenizer = tokenizers.bpe.BPETokenizer(self._bpemb)
 
         if load_pretrained_embs:
             self._pretrained_embs: torch.Tensor = torch.zeros(
@@ -451,10 +465,7 @@ class BPEVocab(Vocab):
 
         # We add PAD and CLS at the end to avoid further processing the token ids
         # we get from BPE
-        self._id2word: T.List[str] = self._bpemb.words + [
-            self.padding_tok,
-            self.cls_tok,
-        ]
+        self._id2word: T.List[str] = self._bpemb.words + self._lsspecial_tok
         self._word2id: T.Dict[str, int] = {
             word: id_ for id_, word in enumerate(self._id2word)
         }
@@ -465,9 +476,9 @@ class BPEVocab(Vocab):
         return txt
 
     @property
-    def tokenizer(self) -> tokenizers.Tokenizer:
+    def _tokenizer(self) -> tokenizers.Tokenizer:
         """Return the tokenizer used to produce this vocabulary."""
-        return self._tokenizer
+        return self.__tokenizer
 
     def get_tok(self, tok_id: int) -> str:
         """
@@ -479,6 +490,11 @@ class BPEVocab(Vocab):
         return self._id2word[tok_id]
 
     def get_tok_id(self, tok: str) -> int:
+        if tok not in self._word2id:
+            logger.warning(
+                f"BPEVocab asked for a token it doens't know: {tok}. Returning unk tok id."
+            )
+            tok = self.unk_tok
         return self._word2id[tok]
 
     def get_lstok_id(self, lsword: T.List[str]) -> T.List[int]:
@@ -489,20 +505,18 @@ class BPEVocab(Vocab):
             never happen.
         """
 
-        return [self._word2id[word] for word in lsword]
+        return [self.get_tok_id(word) for word in lsword]
 
     @property
     def vocab_size(self) -> int:
         return self._vocab_size
 
     def get_lstok(self, lsword_id: T.List[int]) -> T.List[str]:
-        return [self._id2word[word_id] for word_id in lsword_id]
+        return [self.get_tok(word_id) for word_id in lsword_id]
 
     @property
-    def unk_tok(self) -> str:
-        raise ValueError(
-            "BPE embeddings have no UNK token, one can always tokenize down to character level."
-        )
+    def _lsspecial_tok(self) -> T.List[str]:
+        return [self.padding_tok, self.cls_tok, self.unk_tok]
 
     @property
     def has_pretrained_embs(self) -> bool:
@@ -528,21 +542,32 @@ class BasicVocab(Vocab, Cacheable):
 
     def __init__(
         self,
-        txt_src: TextSource,
         tokenizer: tokenizers.base.Tokenizer,
-        cache_dir: Path,
+        *,
+        txt_src: TextSource,
+        unk_thres: T.Optional[int] = None,
         lower_case: bool = True,
-        unk_thres: int = 1,
+        cache_dir: Path,
         ignore_cache: bool = False,
     ) -> None:
         """Set self._word2id after doing self.process() (via Cacheable.__init__()).
 
         Args:
-            txt_src: Used to build the vocabulary, as well as the list of labels.
+            txt_src: Used to build the vocabulary, as well as the list of labels. Can be
+                none, if we're building a "no vocabulary" vocab.
             tokenizer: Used to break txt_src examples into tokens and build vocab.
             lower_case: Obvious.
             unk_thres: the minimum num of times a token has to appear to be included
-                       in vocab.
+                       in vocab. If None, it means that the vocabulary is built up
+                       continously with every request for a tokenization.
+
+                       That means that the ids assigned to each token depend on the
+                       order in which the token was "seen".
+
+                       unk_thres should be None only in the case of further doing sub
+                       word tokenization, when the token id assigned to the word level
+                       token doesn't actually matter.
+
             cache_dir: Look at Cacheable.__init__
             ignore_cache: Look at Cacheable.__init__
 
@@ -553,7 +578,7 @@ class BasicVocab(Vocab, Cacheable):
         self._lower_case = lower_case
         self._unk_thres = unk_thres
         self._txt_src = txt_src
-        self._tokenizer = tokenizer
+        self.__tokenizer = tokenizer
 
         super().__init__(cache_dir, ignore_cache)
 
@@ -576,13 +601,27 @@ class BasicVocab(Vocab, Cacheable):
         return self._id2word[tok_id]
 
     def get_tok_id(self, tok: str) -> int:
-        return self._word2id[tok]
+        if self._unk_thres is not None:
+            return self._word2id[tok]
+        else:
+            if tok == self.unk_tok:
+                raise Exception(
+                    "asked to translate unk_tok, but self._unk_thres is None"
+                )
+            else:
+                if tok in self._id2word:
+                    return self._word2id[tok]
+                else:
+                    self._id2word.append(tok)
+                    tok_id = len(self._id2word)
+                    self._word2id[tok] = tok_id
+                    return tok_id
 
     def __repr__(self) -> str:
         """Look at superclass doc."""
         return (
             f"BasicVocab"
-            f"-tokenizer_{self.tokenizer}"
+            f"-tokenizer_{self._tokenizer}"
             f"-lower_case_{self._lower_case}"
             f"-unk_thres_{self._unk_thres}"
             f"txt_src_{self._txt_src}"
@@ -593,16 +632,18 @@ class BasicVocab(Vocab, Cacheable):
         return len(self._id2word)
 
     @property
-    def tokenizer(self) -> tokenizers.base.Tokenizer:
-        return self._tokenizer
+    def _tokenizer(self) -> tokenizers.base.Tokenizer:
+        return self.__tokenizer
+
+    @property
+    def _lsspecial_tok(self) -> T.List[str]:
+        return [self.padding_tok, self.cls_tok, self.unk_tok]
 
     def get_lstok_id(self, lsword: T.List[str]) -> T.List[int]:
-        return [
-            self._word2id.get(word, self.get_tok_id(self.unk_tok)) for word in lsword
-        ]
+        return [self.get_tok_id(word) for word in lsword]
 
     def get_lstok(self, lsword_id: T.List[int]) -> T.List[str]:
-        return [self._id2word[word_id] for word_id in lsword_id]
+        return [self.get_tok(word_id) for word_id in lsword_id]
 
     def process(self) -> None:
         """Look at Cacheable.process.
@@ -611,24 +652,32 @@ class BasicVocab(Vocab, Cacheable):
             self._id2word: List[str]
             self._labels: Labels
         """
-        word_counts: Counter[str] = Counter()
-        lslbl: T.List[str] = []
-
-        for lssent, lbl in self._txt_src:
-            lslbl.append(lbl)
-            for sent in lssent:
-                sent = self.simplify_txt(sent)
-                lsword = self.tokenizer.tokenize(sent)
-                word_counts.update(lsword)
-
-        id2word = [
-            word for word, count in word_counts.items() if count >= self._unk_thres
+        self._id2word: T.List[str] = [
+            self.padding_tok,
+            self.cls_tok,
         ]
-        self._id2word = [self.padding_tok, self.cls_tok, self.unk_tok] + id2word
+        lslbl: T.List[str] = []
+        if self._unk_thres is not None:
+            word_counts: Counter[str] = Counter()
+
+            for lssent, lbl in self._txt_src:
+                lslbl.append(lbl)
+                for sent in lssent:
+                    sent = self.simplify_txt(sent)
+                    lsword = self.tokenize(sent)
+                    word_counts.update(lsword)
+
+            id2word = [
+                word for word, count in word_counts.items() if count >= self._unk_thres
+            ]
+            self._id2word.append(self.unk_tok)
+            self._id2word.extend(id2word)
+            logger.info(f"Made id2word of length {len(self._id2word)}")
+        else:  # self._unk_thres == None
+            _, lslbl = map(list, zip(*self._txt_src))  # type: ignore
 
         id2lbl = list(sorted(set(lslbl)))
         self._labels = Labels(id2lbl)
-        logger.info(f"Made id2word of length {len(self._id2word)}")
         logger.info(f"Made id2lbl of length {len(self.labels.all_lbls)}")
 
     @property
@@ -641,7 +690,7 @@ class BertVocab(Vocab):
 
     def __init__(self) -> None:
         """Extract unique labels."""
-        self._tokenizer = tokenizers.bert.WrappedBertTokenizer()
+        self.__tokenizer = tokenizers.bert.WrappedBertTokenizer()
         super().__init__()
 
         self._pad_id = 0
@@ -654,43 +703,47 @@ class BertVocab(Vocab):
 
     @property
     def vocab_size(self) -> int:
-        return self._tokenizer.unwrapped_tokenizer.vocab_size
+        return self.__tokenizer.unwrapped_tokenizer.vocab_size
 
     @property
     def padding_tok(self) -> str:
-        return self._tokenizer.unwrapped_tokenizer.pad_token
+        return self.__tokenizer.unwrapped_tokenizer.pad_token
 
     @property
     def cls_tok(self) -> str:
-        return self._tokenizer.unwrapped_tokenizer.cls_token
+        return self.__tokenizer.unwrapped_tokenizer.cls_token
 
     @property
     def sep_tok(self) -> str:
-        return self._tokenizer.unwrapped_tokenizer.sep_token
+        return self.__tokenizer.unwrapped_tokenizer.sep_token
 
     @property
     def unk_tok(self) -> str:
-        return self._tokenizer.unwrapped_tokenizer.unk_token
-
-    def __repr__(self) -> str:
-        return f"BertVocab-" f"model_name_{self._tokenizer.bert_model_name}"
+        return self.__tokenizer.unwrapped_tokenizer.unk_token
 
     @property
-    def tokenizer(self) -> tokenizers.bert.WrappedBertTokenizer:
-        return self._tokenizer
+    def _lsspecial_tok(self) -> T.List[str]:
+        return [self.unk_tok, self.cls_tok, self.padding_tok, self.sep_tok]
+
+    def __repr__(self) -> str:
+        return "BertVocab-" f"model_name_{self.__tokenizer.bert_model_name}"
+
+    @property
+    def _tokenizer(self) -> tokenizers.bert.WrappedBertTokenizer:
+        return self.__tokenizer
 
     def get_tok(self, tok_id: int) -> str:
         return self._tokenizer.unwrapped_tokenizer.convert_ids_to_tokens(tok_id)
 
     def get_tok_id(self, tok: str) -> int:
-        return self.tokenizer.unwrapped_tokenizer.convert_tokens_to_ids(tok)
+        return self._tokenizer.unwrapped_tokenizer.convert_tokens_to_ids(tok)
 
     def get_lstok_id(self, lsword: T.List[str]) -> T.List[int]:
-        lstok_id = self.tokenizer.unwrapped_tokenizer.convert_tokens_to_ids(lsword)
+        lstok_id = self._tokenizer.unwrapped_tokenizer.convert_tokens_to_ids(lsword)
         return lstok_id
 
     def get_lstok(self, lsword_id: T.List[int]) -> T.List[str]:
-        lstok: T.List[str] = self.tokenizer.unwrapped_tokenizer.convert_ids_to_tokens(
+        lstok: T.List[str] = self._tokenizer.unwrapped_tokenizer.convert_ids_to_tokens(
             lsword_id
         )
         return lstok
@@ -703,7 +756,7 @@ class BertVocab(Vocab):
     ) -> torch.Tensor:
         """Pad/truncate tokens, convert them to torch tensors and move them to device.
 
-        This adds [CLS], [SEP], and obviously [PAD] in the correct spots.
+        This adds [cls], [sep], and obviously [pad] in the correct spots.
         The length of the sequence after padding/truncating will be equal to the longest
         sequence in `lslstok_id`, or embedder.max_seq_len, whichever is smaller.
 
@@ -1083,7 +1136,7 @@ class SentenceGraphDataset(BaseSentenceToGraphDataset[BasicVocab], Cacheable):
 
             # For turning the sentence into a graph
             # Note that we are bypassing any vocab filtering(like replacing with UNK)
-            per_column_lsword = self._vocab.tokenizer.batch_tokenize(
+            per_column_lsword = self._vocab.batch_tokenize(
                 self._vocab.batch_simplify_txt(list(per_column_lssent))
             )
             per_column_sentgraph = self._sent2graph.batch_to_graph(per_column_lsword)
@@ -1116,7 +1169,7 @@ class SentenceGraphDataset(BaseSentenceToGraphDataset[BasicVocab], Cacheable):
         lssent, lbl = sent_ex
         lssentgraph: T.List[Graph] = []
         for sent in lssent:
-            lsword = self._vocab.tokenizer.tokenize(self._vocab.simplify_txt(sent))
+            lsword = self._vocab.tokenize(self._vocab.simplify_txt(sent))
             lsedge, lsedge_type, lsimp_node, _ = self._sent2graph.to_graph(lsword)
             nodeid2wordid = self._vocab.tokenize_and_get_lstok_id(sent)
             sentgraph = Graph(
@@ -1154,7 +1207,7 @@ def load_splits(
     lstxt_col: T.List[str] = ["sentence"],
     lbl_col: str = "label",
     delimiter: str = "\t",
-    unk_thres: int = 2,
+    unk_thres: T.Optional[int] = 1,
 ) -> T.Tuple[
     T.Dict[str, BaseSentenceToGraphDataset[BasicVocab]],
     T.Dict[str, CsvTextSource],

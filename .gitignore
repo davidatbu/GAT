@@ -1,6 +1,8 @@
 # Vim session
 Session.vim
 
+# Sym links
+pretrained_models/
 actual_data/
 
 # Waandb

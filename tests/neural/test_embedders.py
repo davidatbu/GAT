@@ -73,7 +73,7 @@ class TestEmbs(testing_utils.TempDirMixin, unittest.TestCase):
 
         max_seq_len = max(map(len, lslstok_id))
         assert embs.size(1) == max_seq_len + 1
-        # The +1 for the [SEP] token, not removed by strip_after_embedder.
+        # The +1 for the [sep] token, not removed by strip_after_embedder.
 
     @debug_on()
     def test_reconciler(self,) -> None:

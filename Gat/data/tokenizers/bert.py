@@ -23,7 +23,7 @@ class WrappedBertTokenizer(Tokenizer):
             do_lower_case=False,  # We handle lower casing ourselves, for consistency
         )
 
-    def tokenize(self, txt: str) -> T.List[str]:
+    def _tokenize(self, txt: str) -> T.List[str]:
         return self._unwrapped_tokenizer.tokenize(txt)  # type: ignore
 
     @property

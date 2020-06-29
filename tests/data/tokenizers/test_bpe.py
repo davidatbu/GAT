@@ -14,12 +14,13 @@ class TestBPE(unittest.TestCase):
 
     def test_it(self) -> None:
         test_str = (
-            "the diets of the wealthy were rich in sugars, which promoted"
+            "[cls]the diets of the wealthy were rich in sugars, which promoted"
             " periodontal disease. despite"
         )
         self.assertListEqual(
-            self._tokenizer.tokenize(test_str),
+            self._tokenizer.tokenize(test_str, lsspecial_tok=["[cls]"]),
             [
+                "[cls]",
                 "▁the",
                 "▁diet",
                 "s",

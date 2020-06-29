@@ -417,8 +417,8 @@ class BertEmbedder(Embedder):
     def forward(self, tok_ids: torch.Tensor) -> torch.Tensor:
         """Get the BERT token embeddings.
 
-        Assumes that tok_ids already is "well-prepared", ie, has the [CLS] and [PAD] and
-        [SEP] tokens in all the right places.
+        Assumes that tok_ids already is "well-prepared", ie, has the [cls] and [pad] and
+        [sep] tokens in all the right places.
 
         Args:
             tok_ids: (B, L)
