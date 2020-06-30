@@ -176,6 +176,7 @@ class BasicVocab(Vocab, Cacheable):
         self._word2id: T.Dict[str, int] = {
             word: id_ for id_, word in enumerate(self._id2word)
         }
+        self._unk_tok_id = self._word2id[self.unk_tok]
 
     def simplify_txt(self, txt: str) -> str:
         """Lower case if necessary."""
@@ -196,7 +197,7 @@ class BasicVocab(Vocab, Cacheable):
 
     def get_tok_id(self, tok: str) -> int:
         if self._unk_thres is not None:
-            return self._word2id[tok]
+            return self._word2id.get(tok, self._unk_tok_id)
         else:
             if tok == self.unk_tok:
                 raise Exception(

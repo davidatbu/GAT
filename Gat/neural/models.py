@@ -6,6 +6,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from Gat import configs
+from Gat import utils
 from Gat.data import vocabs
 from Gat.neural import layers
 
