@@ -34,15 +34,13 @@ class GATForSequenceClassification(nn.Module):  # type: ignore
         setattr(positional_embedder, "debug_name", "positional_embedder")
         if config.node_embedding_type == "basic":
             word_embedder: layers.Embedder = layers.BasicEmbedder(
-                num_embeddings=word_vocab.vocab_size,
-                embedding_dim=config.embedding_dim,
-                padding_idx=word_vocab.get_tok_id(word_vocab.padding_tok),
+                vocab=word_vocab, embedding_dim=config.embedding_dim,
             )
         else:
             sub_word_embedder: layers.Embedder
             assert sub_word_vocab is not None
             if config.node_embedding_type == "pooled_bert":
-                sub_word_embedder = layers.BertEmbedder()
+                sub_word_embedder = layers.BertEmbedder(vocab=vocabs.BertVocab())
                 word_embedder = layers.ReconcilingEmbedder(
                     sub_word_vocab, word_vocab, sub_word_embedder
                 )
@@ -52,36 +50,27 @@ class GATForSequenceClassification(nn.Module):  # type: ignore
                         sub_word_vocab.has_pretrained_embs
                     ), "use_pretrained_embs=True, but sub_word_vocab.has_pretrained_embs=False"
                     sub_word_embedder = layers.BasicEmbedder(
-                        padding_idx=sub_word_vocab.get_tok_id(
-                            sub_word_vocab.padding_tok
-                        ),
+                        vocab=sub_word_vocab,
                         pretrained_embs=sub_word_vocab.pretrained_embs,
                     )
                 else:
                     sub_word_embedder = layers.BasicEmbedder(
-                        padding_idx=sub_word_vocab.get_tok_id(
-                            sub_word_vocab.padding_tok
-                        ),
-                        num_embeddings=sub_word_vocab.vocab_size,
-                        embedding_dim=config.embedding_dim,
+                        vocab=sub_word_vocab, embedding_dim=config.embedding_dim,
                     )
             word_embedder = layers.ReconcilingEmbedder(
                 sub_word_vocab, word_vocab, sub_word_embedder
             )
 
         setattr(word_embedder, "debug_name", "word_embedder")
-        # If we don't do this, our TensorBoard graph won't look nice
-        # because we word embedder to GatLayered as well
-        self._word_embedder_container = [word_embedder]
+        self._word_embedder = word_embedder
 
         if config.use_edge_features:
             head_size = config.embedding_dim // config.gat_layered.num_heads
-            key_edge_feature_embedder: T.Optional[
-                layers.BasicEmbedder
-            ] = layers.BasicEmbedder(
-                num_embeddings=config.dataset_dep.num_edge_types,
+            key_edge_feature_embedder: T.Optional[nn.Embedding] = nn.Embedding(
+                num_embeddings=config.dataset_dep.num_edge_types
+                + 1,  # For the padding idx
                 embedding_dim=head_size,
-                padding_idx=word_vocab.get_tok_id(word_vocab.padding_tok),
+                padding_idx=config.dataset_dep.num_edge_types,
             )
             setattr(
                 key_edge_feature_embedder, "debug_name", "key_edge_feature_embedder"
@@ -103,17 +92,7 @@ class GATForSequenceClassification(nn.Module):  # type: ignore
 
         setattr(self._linear, "debug_name", "linear")
 
-    @property
-    def word_embedder(self) -> layers.Embedder:
-        """Used in train.py's LitGatForSequenceClassification._collate_fn"""
-        return self._word_embedder_container[0]
-
-    def forward(
-        self,
-        word_ids: torch.Tensor,
-        batched_adj: torch.Tensor,
-        edge_types: T.Optional[torch.Tensor],
-    ) -> Tensor:
+    def forward(self, prepared_batch: layers.PreparedBatch) -> Tensor:
         """
         
         Args:
@@ -122,26 +101,17 @@ class GATForSequenceClassification(nn.Module):  # type: ignore
             edge_types: (B, L, L)
         """
 
-        h = self._gat_layered(
-            node_ids=word_ids, batched_adj=batched_adj, edge_types=edge_types
-        )
+        h = self._gat_layered(prepared_batch)
         # (B, L, E)
 
-        assert torch.all(
-            word_ids[:, 0] == torch.tensor(self._cls_tok_id, dtype=torch.long)
-        )
         cls_id_h = h[:, 0]
-
+        # (B, E)
         cls_id_h = self._dropout(cls_id_h)
         logits = self._linear(cls_id_h)
+        # (B,C)
 
         return logits
 
-    def __call__(
-        self,
-        word_ids: torch.Tensor,
-        batched_adj: torch.Tensor,
-        edge_types: T.Optional[torch.Tensor],
-    ) -> Tensor:
+    def __call__(self, prepared_batch: layers.PreparedBatch) -> Tensor:
 
-        return super().__call__(word_ids, batched_adj, edge_types)  # type: ignore
+        return super().__call__(prepared_batch)  # type: ignore[no-any-return]

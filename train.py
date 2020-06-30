@@ -21,6 +21,7 @@ from Gat import configs
 from Gat import data
 from Gat import utils
 from Gat.loggers.wandb_logger import WandbLogger  # type: ignore [attr-defined]
+from Gat.neural import layers
 from Gat.neural import models
 
 
@@ -30,13 +31,6 @@ from Gat.neural import models
 logger = logging.getLogger("__main__")
 
 seed_everything(0)
-
-
-class OneBatch(T.NamedTuple):
-    word_ids: torch.Tensor
-    batched_adj: torch.Tensor
-    edge_types: torch.Tensor
-    target: torch.Tensor
 
 
 class LitGatForSequenceClassification(LightningModule):
@@ -106,7 +100,9 @@ class LitGatForSequenceClassification(LightningModule):
         self._crs_entrpy = nn.CrossEntropyLoss()
         self._trainer_config = self._all_config.trainer
 
-    def _collate_fn(self, lsgraph_example: T.List[utils.GraphExample]) -> OneBatch:
+    def _prepare_batch(
+        self, lsgraph_example: T.List[utils.GraphExample]
+    ) -> layers.PreparedBatch:
         """Turn `GraphExample` into a series of `torch.Tensor`s  """
         lslsgraph: T.List[T.List[utils.Graph]]
         lslbl_id: T.List[int]
@@ -124,13 +120,13 @@ class LitGatForSequenceClassification(LightningModule):
         lslsedge, lslsedge_type, lslsimp_node, lsnodeid2wordid = [
             list(tup_graph_attr) for tup_graph_attr in zip(*lsgraph)  # type: ignore
         ]
-        word_ids: torch.Tensor = self._gat_model.word_embedder.prepare_for_embedder(
-            lsnodeid2wordid, self._word_vocab
-        )
-        word_ids.requires_grad_(False)
-        # (B, L)
 
-        B, L = word_ids.size()
+        B = len(lsgraph_example)
+        # TODO: Clean up access of private attributes
+        L = self._gat_model._word_embedder.max_seq_len
+        if L is None:  # No maximum sequence by embedder
+            L = max(map(len, lsnodeid2wordid))
+
         # Build the adjacnecy matrices
         batched_adj = torch.zeros([B, L, L], dtype=torch.bool)
         batched_adj.requires_grad_(False)
@@ -151,27 +147,27 @@ class LitGatForSequenceClassification(LightningModule):
         target = torch.tensor(lslbl_id, dtype=torch.long)
         # (B,)
 
-        return OneBatch(
-            word_ids=word_ids,
+        return layers.PreparedBatch(
+            lslsnode_id=lsnodeid2wordid,
             batched_adj=batched_adj,
             edge_types=edge_types,
             target=target,
         )
 
-    def train_dataloader(self) -> DataLoader[OneBatch]:
+    def train_dataloader(self) -> DataLoader[utils.GraphExample]:
         res = DataLoader(
             dataset=self._dataset_per_split["train"],
-            collate_fn=self._collate_fn,
+            collate_fn=self._prepare_batch,
             batch_size=self._trainer_config.train_batch_size,
             num_workers=8,
         )
 
         return res
 
-    def val_dataloader(self) -> T.List[DataLoader[OneBatch]]:
+    def val_dataloader(self) -> T.List[DataLoader[utils.GraphExample]]:
         val_dataloader = DataLoader(
             self._dataset_per_split["val"],
-            collate_fn=self._collate_fn,
+            collate_fn=self._prepare_batch,
             batch_size=self._trainer_config.eval_batch_size,
             num_workers=8,
         )
@@ -182,7 +178,7 @@ class LitGatForSequenceClassification(LightningModule):
         )
         cut_train_dataloader = DataLoader(
             cut_train_dataset,
-            collate_fn=self._collate_fn,
+            collate_fn=self._prepare_batch,
             batch_size=self._trainer_config.eval_batch_size,
             num_workers=8,
         )
@@ -197,45 +193,40 @@ class LitGatForSequenceClassification(LightningModule):
         return optim.Adam(params, lr=self._trainer_config.lr)
 
     def forward(  # type: ignore
-        self,
-        word_ids: torch.Tensor,
-        batched_adj: torch.Tensor,
-        edge_types: torch.Tensor,
+        self, lsgraph_example: T.List[utils.GraphExample]
     ) -> torch.Tensor:
-        logits = self._gat_model(word_ids, batched_adj, edge_types)
+        logits = self._gat_model(lsgraph_example)
         return logits
 
-    def __call__(
-        self,
-        word_ids: torch.Tensor,
-        batched_adj: torch.Tensor,
-        edge_types: torch.Tensor,
-    ) -> torch.Tensor:
-        return super().__call__(word_ids, batched_adj, edge_types)  # type: ignore
+    def __call__(self, prepared_batch: layers.PreparedBatch) -> torch.Tensor:
+        return super().__call__(prepared_batch)  # type: ignore[no-any-return]
 
     def training_step(  # type: ignore
-        self, batch: OneBatch, batch_idx: int
+        self, prepared_batch: layers.PreparedBatch, batch_idx: int
     ) -> T.Dict[str, T.Union[Tensor, T.Dict[str, Tensor]]]:
-        logits = self(batch.word_ids, batch.batched_adj, batch.edge_types)
-        loss = self._crs_entrpy(logits, batch.target)
+        # TODO: What we pass to self() shouldn't contains .target
+        logits = self(prepared_batch)
+        loss = self._crs_entrpy(logits, prepared_batch.target)
 
         return {
             "loss": loss,
         }
 
     def validation_step(  # type: ignore
-        self, batch: OneBatch, batch_idx: int, dataloader_idx: int = 0
+        self,
+        prepared_batch: layers.PreparedBatch,
+        batch_idx: int,
+        dataloader_idx: int = 0,
     ) -> T.Dict[str, Tensor]:
-        logits = self(batch.word_ids, batch.batched_adj, batch.edge_types)
-        return {"logits": logits.detach(), "target": batch.target}
+        logits = self(prepared_batch)
+        return {"logits": logits.detach(), "target": prepared_batch.target}
 
     def on_train_start(self) -> None:
         return
-        one_example: OneBatch = next(iter(self.train_dataloader()))
+        one_batch: T.List[utils.GraphExample] = next(iter(self.train_dataloader()))
         # NOTE: The tb logger must be the first
         self.logger[0].experiment.add_graph(
-            self._gat_model,
-            (one_example.word_ids, one_example.batched_adj, one_example.edge_types,),
+            self._gat_model, (one_batch),
         )
 
     def validation_epoch_end(

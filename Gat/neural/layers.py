@@ -7,7 +7,7 @@ import logging
 import math
 import typing as T
 
-import numpy as np
+import numpy as np  # type: ignore
 import torch
 import typing_extensions as TT
 from torch import nn
@@ -17,11 +17,19 @@ from transformers import AutoModel
 from transformers import BertModel
 
 from Gat import configs
+from Gat import utils
 from Gat.data import vocabs
 from Gat.data.tokenizers import Tokenizer
 
 
 logger = logging.getLogger("__main__")
+
+
+class PreparedBatch(T.NamedTuple):
+    lslsnode_id: T.List[T.List[int]]
+    batched_adj: torch.Tensor
+    edge_types: torch.Tensor
+    target: torch.Tensor
 
 
 class GraphMultiHeadAttention(nn.Module):  # type: ignore
@@ -460,6 +468,9 @@ class BertEmbedder(Embedder):
         self._model: BertModel = AutoModel.from_pretrained(
             pretrained_model_name_or_path=self._model_name, config=config
         )
+        self._cls_tok_id = self._vocab.get_tok_id(self._vocab.cls_tok)
+        self._sep_tok_id = self._vocab.get_tok_id(self._vocab.sep_tok)
+        self._padding_tok_id = self._vocab.get_tok_id(self._vocab.padding_tok)
 
     def forward(self, lslstok_id: T.List[T.List[int]]) -> torch.Tensor:
         """Get the BERT token embeddings.
@@ -523,14 +534,11 @@ class BertEmbedder(Embedder):
         ):
             non_special_tok_seq_len = self.max_seq_len - num_special_tokens
 
-        cls_tok_id = self._vocab.get_tok_id(self._vocab.cls_tok)
-        sep_tok_id = self._vocab.get_tok_id(self._vocab.sep_tok)
-        padding_tok_id = self._vocab.get_tok_id(self._vocab.padding_tok)
         padded_lslstok_id = [
-            [cls_tok_id]
+            [self._cls_tok_id]
             + lstok_id[:non_special_tok_seq_len]
-            + [sep_tok_id]
-            + [padding_tok_id] * max(0, non_special_tok_seq_len - len(lstok_id))
+            + [self._sep_tok_id]
+            + [self._padding_tok_id] * max(0, non_special_tok_seq_len - len(lstok_id))
             for lstok_id in lslstok_id
         ]
         tok_ids: torch.Tensor = torch.tensor(
@@ -556,50 +564,40 @@ class BertEmbedder(Embedder):
 
 class BasicEmbedder(Embedder):
     @T.overload
-    def __init__(
-        self,
-        padding_idx: int,
-        vocab: vocabs.Vocab,
-        *,
-        num_embeddings: int,
-        embedding_dim: int,
-    ) -> None:
+    def __init__(self, vocab: vocabs.Vocab, *, embedding_dim: int,) -> None:
         ...
 
     @T.overload
-    def __init__(
-        self, padding_idx: int, vocab: vocabs.Vocab, *, pretrained_embs: torch.Tensor,
-    ) -> None:
+    def __init__(self, vocab: vocabs.Vocab, *, pretrained_embs: torch.Tensor,) -> None:
         ...
 
     def __init__(
         self,
-        padding_idx: int,
         vocab: vocabs.Vocab,
         pretrained_embs: T.Optional[torch.Tensor] = None,
-        num_embeddings: T.Optional[int] = None,
         embedding_dim: T.Optional[int] = None,
     ) -> None:
         """Wrapper around `nn.Embedding` that conforms to `Embedder`."""
         super().__init__(vocab)
 
         embedder: nn.Embedding
+        padding_tok_id = vocab.get_tok_id(vocab.padding_tok)
         if pretrained_embs is not None:
-            assert num_embeddings is None and embedding_dim is None
+            assert embedding_dim is None
             embedder = nn.Embedding.from_pretrained(
-                pretrained_embs, padding_idx=padding_idx
+                pretrained_embs, padding_idx=padding_tok_id
             )
 
         else:
-            assert num_embeddings is not None and embedding_dim is not None
+            assert embedding_dim is not None
+            assert vocab.vocab_size is not None
             embedder = nn.Embedding(
-                num_embeddings=num_embeddings,
+                num_embeddings=vocab.vocab_size,
                 embedding_dim=embedding_dim,
-                padding_idx=padding_idx,
+                padding_idx=padding_tok_id,
             )
 
         self._embedder = embedder
-        self._padding_idx = padding_idx
 
     def forward(self, lslstok_id: T.List[T.List[int]]) -> torch.Tensor:
         """.
@@ -867,8 +865,8 @@ class GATLayered(nn.Module):  # type: ignore
         self,
         config: configs.GATLayeredConfig,
         lsnode_feature_embedder: T.List[Embedder],
-        key_edge_feature_embedder: T.Optional[BasicEmbedder],
-        value_edge_feature_embedder: T.Optional[BasicEmbedder],
+        key_edge_feature_embedder: T.Optional[nn.Embedding],
+        value_edge_feature_embedder: T.Optional[nn.Embedding],
     ):
         """It's like the transformer.
 
@@ -937,21 +935,18 @@ class GATLayered(nn.Module):  # type: ignore
 
         self._dropout = nn.Dropout(config.feat_dropout_p)
 
-    def forward(
-        self,
-        node_ids: torch.Tensor,
-        batched_adj: torch.Tensor,
-        edge_types: T.Optional[torch.Tensor],
-    ) -> Tensor:
-        node_features = self._lsnode_feature_embedder[0](node_ids)
+    def forward(self, prepared_batch: PreparedBatch) -> Tensor:
+        node_features = self._lsnode_feature_embedder[0](prepared_batch.lslsnode_id)
         for embedder in self._lsnode_feature_embedder[1:]:
-            node_features = node_features + embedder(node_ids)
+            node_features = node_features + embedder(prepared_batch.lslsnode_id)
 
         node_features = self._dropout(node_features)
 
         if self._key_edge_feature_embedder:
-            assert edge_types is not None
-            key_edge_features = self._key_edge_feature_embedder(edge_types)
+            assert prepared_batch.edge_types is not None
+            key_edge_features = self._key_edge_feature_embedder(
+                prepared_batch.edge_types
+            )
             key_edge_features = self._dropout(key_edge_features)
 
         for multihead_att_wrapped, feed_forward_wrapped in zip(
@@ -959,7 +954,7 @@ class GATLayered(nn.Module):  # type: ignore
         ):
             node_features = multihead_att_wrapped(
                 node_features=node_features,
-                batched_adj=batched_adj,
+                batched_adj=prepared_batch.batched_adj,
                 key_edge_features=key_edge_features,
             )
 
@@ -967,14 +962,9 @@ class GATLayered(nn.Module):  # type: ignore
 
         return node_features
 
-    def __call__(
-        self,
-        node_ids: torch.Tensor,
-        batched_adj: torch.Tensor,
-        edge_types: T.Optional[torch.Tensor],
-    ) -> Tensor:
+    def __call__(self, prepared_batch: PreparedBatch) -> Tensor:
         return super().__call__(  # type: ignore
-            node_ids=node_ids, batched_adj=batched_adj, edge_types=edge_types
+            prepared_batch
         )
 
 

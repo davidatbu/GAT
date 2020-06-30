@@ -76,7 +76,7 @@ class Vocab(Numerizer):
         return "[pad]"
 
     @abc.abstractproperty
-    def vocab_size(self) -> int:
+    def vocab_size(self) -> T.Optional[int]:
         pass
 
     @property
@@ -176,7 +176,8 @@ class BasicVocab(Vocab, Cacheable):
         self._word2id: T.Dict[str, int] = {
             word: id_ for id_, word in enumerate(self._id2word)
         }
-        self._unk_tok_id = self._word2id[self.unk_tok]
+        if unk_thres is not None:
+            self._unk_tok_id = self._word2id[self.unk_tok]
 
     def simplify_txt(self, txt: str) -> str:
         """Lower case if necessary."""
@@ -223,8 +224,11 @@ class BasicVocab(Vocab, Cacheable):
         )
 
     @property
-    def vocab_size(self) -> int:
-        return len(self._id2word)
+    def vocab_size(self) -> T.Optional[int]:
+        if self._unk_thres is not None:
+            return len(self._id2word)
+        else:
+            return None
 
     @property
     def _tokenizer(self) -> Tokenizer:
