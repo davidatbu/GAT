@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import itertools
 import typing as T
 
 import typing_extensions as TT
@@ -13,6 +14,11 @@ class Config:
     def __init__(self) -> None:
         self._did__init__ = True
         self._validate()
+
+    def __eq__(self: _ConfigType, other: object) -> bool:
+        if self.__class__ != other.__class__:
+            return False
+        return self.__dict__ == other.__dict__
 
     def __setattr__(
         self, n: str, v: T.Optional[T.Union["Config", int, float, str]]
@@ -36,8 +42,52 @@ class Config:
         return repr(f"{self.__class__}.from_dict({self.as_dict()})")
 
     @classmethod
-    def from_dict(cls: T.Type[_ConfigType], d: T.Dict[str, T.Any]) -> _ConfigType:
-        raise NotImplementedError()
+    def from_flat_dict(cls: T.Type[_ConfigType], d: T.Dict[str, T.Any]) -> _ConfigType:
+        """
+        The reverse of .as_flat_dict()
+        """
+        type_hints = T.get_type_hints(cls.__init__)
+
+        # Build the arguments step by step
+        init_kwargs: T.Dict[str, T.Any] = {}
+
+        # Find all dict items corresponding to child Config's
+        def top_qualifier(key: str) -> str:
+            assert "." in key
+            return key.split(".")[0]
+
+        child_config_keys_grouped = [
+            (top_qualifier, tuple(full_qualifiers))
+            for top_qualifier, full_qualifiers in itertools.groupby(
+                filter(lambda s: "." in s, d.keys()), key=top_qualifier
+            )
+        ]
+
+        for (
+            child_config_top_qualifer,
+            child_config_full_qualifiers,
+        ) in child_config_keys_grouped:
+            child_config_without_top_qualifiers = [
+                qualifier[qualifier.find(".") + 1 :]
+                for qualifier in child_config_full_qualifiers
+            ]
+            child_config_cls = type_hints[child_config_top_qualifer]
+            assert issubclass(child_config_cls, Config)
+            child_config_flat_dict = {
+                child_qualifier: d[full_qualifier]
+                for child_qualifier, full_qualifier in zip(
+                    child_config_without_top_qualifiers, child_config_full_qualifiers,
+                )
+            }
+
+            child_config = child_config_cls.from_flat_dict(child_config_flat_dict)
+            init_kwargs[child_config_top_qualifer] = child_config
+
+        for key, value in d.items():
+            if key.find(".") != -1:
+                continue  # Was part of a child config
+            init_kwargs[key] = value
+        return cls(**init_kwargs)  # type: ignore [call-arg]
 
     def as_dict(self) -> T.Dict[str, T.Any]:
         """Turn this config into a dictionary, recursively."""
@@ -72,6 +122,8 @@ class Config:
         result: T.Dict[str, T.Any] = {}
 
         for key, value in self.__dict__.items():
+            if key == "_did__init__":
+                continue
             if isinstance(value, Config):
                 for child_key, value in value.as_flat_dict().items():
                     final_key = key + sep + child_key
@@ -145,11 +197,11 @@ class GATForSequenceClassificationConfig(Config):
         self,
         gat_layered: GATLayeredConfig,
         embedding_dim: int,
-        node_embedding_type: T.Literal["pooled_bert", "basic", "bpe"],
+        node_embedding_type: TT.Literal["pooled_bert", "basic", "bpe"],
         use_pretrained_embs: bool,
         use_edge_features: bool,
         dataset_dep: T.Optional[GATForSequenceClassificationDatasetDepConfig],
-        bpe_vocab_size: T.Optional[T.Literal[25000]] = None,
+        bpe_vocab_size: T.Optional[TT.Literal[25000]] = None,
     ):
         self.embedding_dim = embedding_dim
         self.gat_layered = gat_layered
