@@ -4,7 +4,7 @@ import logging
 import typing as T
 from pathlib import Path
 
-import torch
+import torch  # type: ignore
 import typing_extensions as TT
 import youtokentome as yttm  # type: ignore[import]
 

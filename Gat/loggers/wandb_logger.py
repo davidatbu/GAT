@@ -57,6 +57,7 @@ class WandbLogger(LightningLoggerBase):
     def __init__(
         self,
         name: Optional[str] = None,
+        config: T.Optional[T.Dict[str.T.Any]] = None,
         save_dir: Optional[str] = None,
         offline: bool = False,
         id: Optional[str] = None,
@@ -72,6 +73,7 @@ class WandbLogger(LightningLoggerBase):
     ):
         super().__init__()
         self._name = name
+        self._config = config
         self._save_dir = save_dir
         self._anonymous = "allow" if anonymous else None
         self._id = version or id
@@ -115,6 +117,7 @@ class WandbLogger(LightningLoggerBase):
                 project=self._project,
                 anonymous=self._anonymous,
                 reinit=True,
+                config=self._config,
                 id=self._id,
                 resume="allow",
                 tags=self._tags,

@@ -1,7 +1,7 @@
 import abc
 import typing as T
 
-import torch
+import torch  # type: ignore
 
 
 class Numerizer(abc.ABC):

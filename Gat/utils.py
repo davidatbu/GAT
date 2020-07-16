@@ -2,7 +2,7 @@
 import base64
 import typing as T
 
-import numpy as np
+import numpy as np  # type: ignore
 import plotly.figure_factory as ff  # type: ignore
 from bs4 import BeautifulSoup as BS  # type: ignore
 from bs4 import NavigableString
