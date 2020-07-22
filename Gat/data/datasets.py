@@ -3,9 +3,7 @@ import logging
 import typing as T
 from pathlib import Path
 
-from torch.utils.data import Dataset
-from tqdm import tqdm  # type: ignore
-
+from Gat.data import numerizer
 from Gat.data import sent2graphs
 from Gat.data import vocabs
 from Gat.data.cacheable import Cacheable
@@ -15,6 +13,8 @@ from Gat.utils import Graph
 from Gat.utils import GraphExample
 from Gat.utils import grouper
 from Gat.utils import SentExample
+from torch.utils.data import Dataset
+from tqdm import tqdm  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,9 @@ _S = T.TypeVar("_S")
 _D = T.TypeVar("_D")
 
 
-class NiceDataset(Dataset, T.Iterable[_T], abc.ABC):  # type: ignore
+class NiceDataset(Dataset, T.Iterable[_T], abc.ABC):  # type: ignore[type-arg]
+    """Inherits from T.Generic, adds __len__ and __iter__"""
+
     @abc.abstractmethod
     def __getitem__(self, i: int) -> _T:
         pass
@@ -61,6 +63,7 @@ class CutDataset(NiceDataset[_T]):
         """
         if total_len < 1:
             raise Exception()
+        super().__init__()
         self._total_len = total_len
         self._base_dataset = base_dataset
 
@@ -74,16 +77,37 @@ class CutDataset(NiceDataset[_T]):
         return self._total_len
 
 
-_GenericVocab = T.TypeVar("_GenericVocab", bound=vocabs.Vocab, covariant=True)
+_NumerizerSub = T.TypeVar("_NumerizerSub", bound=numerizer.Numerizer, covariant=True)
 
 
-class BaseSentenceToGraphDataset(NiceDataset[GraphExample], T.Generic[_GenericVocab]):
+class BaseGraphDataset(NiceDataset[GraphExample], T.Generic[_NumerizerSub]):
     @abc.abstractproperty
     def sent2graph(self) -> sent2graphs.SentenceToGraph:
         pass
 
     @abc.abstractproperty
-    def vocab(self) -> _GenericVocab:
+    def numerizer(self) -> _NumerizerSub:
+        pass
+
+    @abc.abstractproperty
+    def id2edge_type(self) -> T.List[str]:
+        pass
+
+    @abc.abstractproperty
+    def edge_type2id(self) -> T.Dict[str, int]:
+        pass
+
+
+_VocabSub = T.TypeVar("_VocabSub", bound=vocabs.Vocab, covariant=True)
+
+
+class BaseSentenceToGraphDataset(BaseGraphDataset[_VocabSub]):
+    @abc.abstractproperty
+    def sent2graph(self) -> sent2graphs.SentenceToGraph:
+        pass
+
+    @abc.abstractproperty
+    def numerizer(self) -> _VocabSub:
         pass
 
     @abc.abstractproperty
@@ -97,11 +121,11 @@ class BaseSentenceToGraphDataset(NiceDataset[GraphExample], T.Generic[_GenericVo
 
 class UndirectedDataset(
     TransformedDataset[GraphExample, GraphExample],
-    BaseSentenceToGraphDataset[_GenericVocab],
+    BaseSentenceToGraphDataset[_VocabSub],
 ):
     _REVERSED = "_REVERSED"
 
-    def __init__(self, base_dataset: BaseSentenceToGraphDataset[_GenericVocab]):
+    def __init__(self, base_dataset: BaseSentenceToGraphDataset[_VocabSub]):
         self._base_dataset = base_dataset
         self._id2edge_type = self._base_dataset.id2edge_type + [
             edge_type + self._REVERSED for edge_type in base_dataset.id2edge_type
@@ -111,7 +135,7 @@ class UndirectedDataset(
         }
 
     @property
-    def base_dataset(self) -> BaseSentenceToGraphDataset[_GenericVocab]:
+    def base_dataset(self) -> BaseSentenceToGraphDataset[_VocabSub]:
         return self._base_dataset
 
     def _transform(self, example: GraphExample) -> GraphExample:
@@ -140,8 +164,8 @@ class UndirectedDataset(
         return self._base_dataset.sent2graph
 
     @property
-    def vocab(self) -> _GenericVocab:
-        return self._base_dataset.vocab
+    def numerizer(self) -> _VocabSub:
+        return self._base_dataset.numerizer
 
     @property
     def id2edge_type(self) -> T.List[str]:
@@ -154,9 +178,9 @@ class UndirectedDataset(
 
 class ConnectToClsDataset(
     TransformedDataset[GraphExample, GraphExample],
-    BaseSentenceToGraphDataset[_GenericVocab],
+    BaseSentenceToGraphDataset[_VocabSub],
 ):
-    def __init__(self, base_dataset: BaseSentenceToGraphDataset[_GenericVocab]):
+    def __init__(self, base_dataset: BaseSentenceToGraphDataset[_VocabSub]):
         cls_edge_name = "CLS_EDGE"
         assert cls_edge_name not in base_dataset.id2edge_type
         self._base_dataset = base_dataset
@@ -166,11 +190,13 @@ class ConnectToClsDataset(
         self._edge_type2id.update({cls_edge_name: self._cls_edge_id})
 
     @property
-    def base_dataset(self) -> BaseSentenceToGraphDataset[_GenericVocab]:
+    def base_dataset(self) -> BaseSentenceToGraphDataset[_VocabSub]:
         return self._base_dataset
 
     def _transform(self, example: GraphExample) -> GraphExample:
-        cls_tok_id = self.base_dataset.vocab.get_tok_id(self.base_dataset.vocab.cls_tok)
+        cls_tok_id = self.base_dataset.numerizer.get_tok_id(
+            self.base_dataset.numerizer.cls_tok
+        )
         new_example = GraphExample(
             [
                 self._connect_imp_nodes_to_new_node(g, cls_tok_id, self._cls_edge_id)
@@ -187,8 +213,8 @@ class ConnectToClsDataset(
         return self._base_dataset.sent2graph
 
     @property
-    def vocab(self) -> _GenericVocab:
-        return self._base_dataset.vocab
+    def numerizer(self) -> _VocabSub:
+        return self._base_dataset.numerizer
 
     @property
     def id2edge_type(self) -> T.List[str]:

@@ -1,11 +1,20 @@
 """Some datastructures, some convinience functions, can probably be broken up."""
+from __future__ import annotations
+
 import base64
 import typing as T
 
+import lazy_import
+
+if T.TYPE_CHECKING:
+    import networkx as nx  # type: ignore
+else:
+    nx = lazy_import.lazy_module("networkx")
 import numpy as np  # type: ignore
 import plotly.figure_factory as ff  # type: ignore
 from bs4 import BeautifulSoup as BS  # type: ignore
 from bs4 import NavigableString
+from dataclasses import dataclass
 
 Edge = T.Tuple[int, int]
 EdgeList = T.List[Edge]
@@ -14,23 +23,63 @@ NodeList = T.List[Node]
 EdgeType = int
 EdgeTypeList = T.List[EdgeType]
 Slice = T.Tuple[int, int]
+NodeName = T.TypeVar("NodeName")
+EdgeName = T.TypeVar("EdgeName")
+NamedEdgesWithTypes = T.FrozenSet[T.Tuple[T.Tuple[NodeName, NodeName], EdgeName]]
+NamedImpNodes = T.FrozenSet[NodeName]
 
 
-class Graph(T.NamedTuple):
+class Graph:
     """A representation of a graph, amenable to representing a graph of words.
 
     Attributes:
-        lsedge: A list of tuples.
+        lsedge: A list of tuples. `(n1,n2)` means there is an edge between 
+            nodeid2wordid[n1] and nodeid2wordid[n2].
         lsedge_type: A list of edge types.
-        lsimp_node: A list of "important nodes"
+        lsimp_node: A list of "important nodes". `[n1]` means nodeid2wordid[n1] is an
+            important node.
         nodeid2wordid: A mapping from the zero based node indices used in above to a
             global "vocabulary" of some kind.
     """
 
-    lsedge: EdgeList
-    lsedge_type: EdgeTypeList
-    lsimp_node: NodeList
-    nodeid2wordid: T.Optional[T.List[int]]
+    __slots__ = (
+        "lsedge",
+        "lsedge_type",
+        "lsimp_node",
+        "nodeid2wordid",
+    )
+
+    def __init__(
+        self,
+        lsedge: EdgeList,
+        lsedge_type: EdgeTypeList,
+        lsimp_node: NodeList,
+        nodeid2wordid: T.Optional[T.List[int]],
+    ) -> None:
+
+        self.lsedge = lsedge
+        self.lsedge_type = lsedge_type
+        self.lsimp_node = lsimp_node
+        self.nodeid2wordid = nodeid2wordid
+
+    def copy(
+        self,
+        *,
+        lsedge: T.Optional[EdgeList] = None,
+        lsedge_type: T.Optional[EdgeTypeList] = None,
+        lsimp_node: T.Optional[NodeList] = None,
+        nodeid2wordid: T.Optional[T.List[Node]] = None,
+    ) -> Graph:
+
+        graph_class = type(self)
+        return graph_class(
+            lsedge=lsedge if lsedge is not None else self.lsedge,
+            lsedge_type=lsedge_type if lsedge_type is not None else self.lsedge_type,
+            lsimp_node=lsimp_node if lsimp_node is not None else self.lsimp_node,
+            nodeid2wordid=nodeid2wordid
+            if nodeid2wordid is not None
+            else self.nodeid2wordid,
+        )
 
     def __hash__(self) -> int:
         """Needed to use as a key in lru_cache."""
@@ -46,6 +95,49 @@ class Graph(T.NamedTuple):
 
         return hash(tuple(tuple(ls) for ls in to_hash))
 
+    def _named_edges_and_imp_nodes(
+        self,
+        node_namer: T.Callable[[int], NodeName],
+        edge_namer: T.Callable[[int], EdgeName],
+    ) -> T.Tuple[NamedEdgesWithTypes[NodeName, EdgeName], NamedImpNodes[NodeName]]:
+        """"
+        
+        Returns:
+            named_edges_with_types:
+            named_imp_nodes:
+        """
+        assert self.nodeid2wordid
+        lsnode_named = list(map(node_namer, self.nodeid2wordid))
+        lsedge_named = [(lsnode_named[e1], lsnode_named[e2]) for e1, e2 in self.lsedge]
+        lsimp_node_named = frozenset(lsnode_named[n] for n in self.lsimp_node)
+        lsedge_type_named = list(map(edge_namer, self.lsedge_type))
+        lsedge_with_edge_type_named = frozenset(zip(lsedge_named, lsedge_type_named))
+
+        return lsedge_with_edge_type_named, lsimp_node_named
+
+    def equal_to(
+        self,
+        other: Graph,
+        node_namer: T.Callable[[int], NodeName],
+        edge_namer: T.Callable[[int], EdgeName],
+    ) -> bool:
+        """Compares two graphs and checks equality.
+
+        Args:
+            node_namer: the global node ids usually correspond to something like a 
+                word token. We dont want to compare based on the global node id, 
+                but the token itself.
+            edge_namer: Samet thing as node_namer.
+        """
+
+        assert (
+            self.nodeid2wordid is not None and other.nodeid2wordid is not None
+        ), "Need global node ids to determine graph equality"
+
+        self_named = self._named_edges_and_imp_nodes(node_namer, edge_namer)
+        other_named = other._named_edges_and_imp_nodes(node_namer, edge_namer)
+        return self_named == other_named
+
     def to_svg(
         self,
         node_namer: T.Callable[[int], str] = lambda i: str(i),
@@ -60,7 +152,6 @@ class Graph(T.NamedTuple):
         Returns:
             svg_str: An SVG string.
         """
-        import networkx as nx  # type: ignore
 
         g = nx.DiGraph()
 

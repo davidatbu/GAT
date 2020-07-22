@@ -7,14 +7,21 @@ import logging
 import math
 import typing as T
 
+import lazy_import
 import numpy as np  # type: ignore
 import torch
 import typing_extensions as TT
 from torch import nn
 from torch import Tensor
-from transformers import AutoConfig
-from transformers import AutoModel
-from transformers import BertModel
+
+if T.TYPE_CHECKING:
+    from transformers import BertModel
+    from transformers import AutoModel
+    from transformers import AutoConfig
+else:
+    AutoModel = lazy_import.lazy_class("transformers.AutoModel ")
+    AutoConfig = lazy_import.lazy_class("transformers.AutoConfig ")
+    BertModel = lazy_import.lazy_class("transformers.BertModel ")
 
 from Gat import configs
 from Gat import utils

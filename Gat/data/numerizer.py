@@ -15,6 +15,10 @@ class Numerizer(abc.ABC):
     def get_tok(self, tok_id: int) -> str:
         pass
 
+    @abc.abstractproperty
+    def all_tok(self) -> T.List[str]:
+        pass
+
     @abc.abstractmethod
     def get_lstok(self, lstok_id: T.List[int]) -> T.List[str]:
         """Get a list of tokens given a list of token ids."""

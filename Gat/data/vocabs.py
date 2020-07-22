@@ -1,13 +1,19 @@
+from __future__ import annotations
+
 import abc
 import io
 import logging
 import typing as T
 from pathlib import Path
 
-import torch  # type: ignore
+import lazy_import
+import torch
 import typing_extensions as TT
-import youtokentome as yttm  # type: ignore[import]
 
+if T.TYPE_CHECKING:
+    import youtokentome as yttm
+else:
+    yttm = lazy_import.lazy_module("youtokentome")
 from Gat.data.cacheable import Cacheable
 from Gat.data.cacheable import CachingTool
 from Gat.data.cacheable import TorchCachingTool

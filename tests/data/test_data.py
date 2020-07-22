@@ -29,7 +29,7 @@ class TestDatasets(unittest.TestCase):
         graph = example.lsgraph[0]
 
         svg_content = graph.to_svg(
-            node_namer=lambda node_id: self._dataset.vocab.get_tok(node_id),
+            node_namer=lambda node_id: self._dataset.numerizer.get_tok(node_id),
             edge_namer=lambda edge_id: self._dataset.id2edge_type[edge_id],
         )
 
@@ -42,7 +42,7 @@ class TestDatasets(unittest.TestCase):
 
         graph = dataset[0].lsgraph[0]
         svg_content = graph.to_svg(
-            node_namer=lambda node_id: self._dataset.vocab.get_tok(node_id),
+            node_namer=lambda node_id: self._dataset.numerizer.get_tok(node_id),
             edge_namer=lambda edge_id: dataset.id2edge_type[edge_id],
         )
         with open("graph_with_cls.svg", "w") as f:
@@ -54,7 +54,7 @@ class TestDatasets(unittest.TestCase):
 
         graph = dataset[0].lsgraph[0]
         svg_content = graph.to_svg(
-            node_namer=lambda node_id: self._dataset.vocab.get_tok(node_id),
+            node_namer=lambda node_id: self._dataset.numerizer.get_tok(node_id),
             edge_namer=lambda edge_id: dataset.id2edge_type[edge_id],
         )
         with open("graph_undirected.svg", "w") as f:
@@ -68,7 +68,7 @@ class TestDatasets(unittest.TestCase):
 
         graph = dataset[0].lsgraph[0]
         svg_content = graph.to_svg(
-            node_namer=lambda node_id: self._dataset.vocab.get_tok(node_id),
+            node_namer=lambda node_id: self._dataset.numerizer.get_tok(node_id),
             edge_namer=lambda edge_id: dataset.id2edge_type[edge_id],
         )
         with open("graph_with_cls_undirected.svg", "w") as f:

@@ -5,12 +5,19 @@ import itertools
 import typing as T
 from pathlib import Path
 
+import lazy_import
 import spacy  # type: ignore
 import torch
-import youtokentome as yttm
 from torch import nn
-from transformers import AutoTokenizer
-from transformers import BertTokenizer
+
+if T.TYPE_CHECKING:
+    from transformers import AutoTokenizer
+    from transformers import BertTokenizer
+    import youtokentome as yttm
+else:
+    AutoTokenizer = lazy_import.lazy_class("transformers.AutoTokenizer")
+    BertTokenizer = lazy_import.lazy_class("transformers.BertTokenizer")
+    yttm = lazy_import.lazy_module("youtokentome")
 
 
 class Tokenizer(abc.ABC):
@@ -114,7 +121,7 @@ class WrappedBertTokenizer(Tokenizer):
         """Initialize BERT tokenizer."""
         # We're doing only the base model for now
         self._bert_model_name: T.Literal["bert-base-uncased"] = "bert-base-uncased"
-        self._unwrapped_tokenizer = AutoTokenizer.from_pretrained(
+        self._unwrapped_tokenizer: BertTokenizer = AutoTokenizer.from_pretrained(  # type: ignore[assignment]
             self._bert_model_name,
             do_lower_case=False,  # We handle lower casing ourselves, for consistency
         )

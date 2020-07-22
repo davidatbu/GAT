@@ -4,14 +4,23 @@ import typing as T
 from multiprocessing import Process
 from multiprocessing import Queue
 from pprint import pformat
+from types import ModuleType
 from typing import Dict
 from typing import List
 
-import spacy  # type: ignore
+import lazy_import  # type: ignore
 import torch
-from allennlp.predictors.predictor import Predictor  # type: ignore
-from allennlp_models import structured_prediction  # type: ignore # noqa: # the SRL model doesn't get  "registered"  the Predictor class if we don't import this.
-from spacy.tokens import Doc  # type: ignore
+
+if T.TYPE_CHECKING:
+    import spacy
+    from allennlp.predictors.predictor import Predictor  # type: ignore
+    from allennlp_models import structured_prediction  # type: ignore # noqa: # the SRL model doesn't get  "registered"  the Predictor class if we don't import this.
+    from spacy.tokens import Doc  # type: ignore
+
+else:
+    spacy = lazy_import.lazy_module("spacy")
+    Predictor = lazy_import.lazy_class("allennlp.predictors.predictor.Predictor")
+    Doc = lazy_import.lazy_class("spacy.Doc")
 from typing_extensions import Literal
 
 from Gat import utils

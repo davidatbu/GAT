@@ -2,9 +2,17 @@ import typing as T
 import unittest.mock
 import warnings
 
+import lazy_import
 import torch
-from pytorch_lightning.logging import TensorBoardLogger  # type: ignore
-from pytorch_lightning.trainer import Trainer  # type: ignore
+
+if T.TYPE_CHECKING:
+    from pytorch_lightning.logging import TensorBoardLogger  # type: ignore
+    from pytorch_lightning.trainer import Trainer  # type: ignore
+else:
+    TensorBoardLogger = lazy_import.lazy_callable(
+        "pytorch_lightning.logging.TensorBoardLogger"
+    )
+    Trainer = lazy_import.lazy_callable("pytorch_lightning.trainer.Trainer")
 from tests.common import EverythingConfigMixin
 
 import train

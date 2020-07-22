@@ -4,9 +4,9 @@ import logging
 import typing as T
 from pathlib import Path
 
-import torch
-import torch.nn as nn
-import torch.optim as optim
+import torch  # type: ignore
+import torch.nn as nn  # type: ignore
+import torch.optim as optim  # type: ignore
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping  # type: ignore
 from pytorch_lightning.core.lightning import LightningModule  # type: ignore
 from pytorch_lightning.loggers.base import LightningLoggerBase  # type: ignore
@@ -14,7 +14,7 @@ from pytorch_lightning.metrics.functional import accuracy  # type: ignore
 from pytorch_lightning.trainer import seed_everything  # type: ignore
 from pytorch_lightning.trainer import Trainer
 from torch import Tensor
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader  # type: ignore
 
 import Gat.data.utils
 from Gat import configs
@@ -69,7 +69,7 @@ class LitGatForSequenceClassification(LightningModule):
 
         # Set dataset dependent configuration
         self._all_config.model.dataset_dep = configs.GATForSequenceClassificationDatasetDepConfig(
-            num_classes=len(self._dataset_per_split["train"].vocab.labels.all_lbls),
+            num_classes=len(self._dataset_per_split["train"].numerizer.labels.all_lbls),
             num_edge_types=len(self._dataset_per_split["train"].id2edge_type),
         )
 
