@@ -3,18 +3,12 @@ import logging
 import typing as T
 from pathlib import Path
 
-from Gat.data import numerizer
-from Gat.data import sent2graphs
-from Gat.data import vocabs
-from Gat.data.cacheable import Cacheable
-from Gat.data.cacheable import TorchCachingTool
+from Gat.data import numerizer, sent2graphs, vocabs
+from Gat.data.cacheable import Cacheable, TorchCachingTool
 from Gat.data.sources import TextSource
-from Gat.utils import Graph
-from Gat.utils import GraphExample
-from Gat.utils import grouper
-from Gat.utils import SentExample
+from Gat.utils import Graph, GraphExample, SentExample, grouper
 from torch.utils.data import Dataset
-from tqdm import tqdm  # type: ignore
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +17,7 @@ _S = T.TypeVar("_S")
 _D = T.TypeVar("_D")
 
 
-class NiceDataset(Dataset, T.Iterable[_T], abc.ABC):  # type: ignore[type-arg]
+class NiceDataset(Dataset, T.Iterable[_T], abc.ABC):
     """Inherits from T.Generic, adds __len__ and __iter__"""
 
     @abc.abstractmethod
@@ -153,7 +147,7 @@ class UndirectedDataset(
                 for edge_id in g.lsedge_type
             ],
             lsimp_node=g.lsimp_node,
-            nodeid2wordid=g.nodeid2wordid,
+            nodeid2wordid=g.lsglobal_id,
         )
         return new_graph
 
@@ -239,8 +233,8 @@ class ConnectToClsDataset(
         this in a couple of other places. It's better to change it all at the same itme.
         """
 
-        assert g.nodeid2wordid is not None
-        if new_node_global_id in g.nodeid2wordid:
+        assert g.lsglobal_id is not None
+        if new_node_global_id in g.lsglobal_id:
             raise Exception("new node to be added in graph already exists.")
 
         new_node_local_id = 0
@@ -254,7 +248,7 @@ class ConnectToClsDataset(
             + lsedge_shifted,
             lsedge_type=[new_edge_global_id] * len(lsimp_node_shifted) + g.lsedge_type,
             lsimp_node=[new_node_local_id],
-            nodeid2wordid=[new_node_global_id] + g.nodeid2wordid,
+            nodeid2wordid=[new_node_global_id] + g.lsglobal_id,
         )
         return new_graph
 

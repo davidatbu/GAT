@@ -13,7 +13,7 @@ import torch
 
 if T.TYPE_CHECKING:
     import spacy
-    from allennlp.predictors.predictor import Predictor  # type: ignore
+    from allennlp.predictors.predictor import Predictor
     from allennlp_models import structured_prediction  # type: ignore # noqa: # the SRL model doesn't get  "registered"  the Predictor class if we don't import this.
     from spacy.tokens import Doc  # type: ignore
 

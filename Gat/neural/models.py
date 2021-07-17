@@ -3,12 +3,11 @@ import typing as T
 
 import torch
 import torch.nn as nn
-from torch import Tensor
-
 from Gat import configs
 from Gat import utils
 from Gat.data import vocabs
 from Gat.neural import layers
+from torch import Tensor
 
 
 class GATForSequenceClassification(nn.Module):  # type: ignore

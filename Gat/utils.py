@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import base64
+import functools
 import typing as T
+from pathlib import Path
 
 import lazy_import
 
@@ -10,11 +12,12 @@ if T.TYPE_CHECKING:
     import networkx as nx  # type: ignore
 else:
     nx = lazy_import.lazy_module("networkx")
-import numpy as np  # type: ignore
+from dataclasses import dataclass
+
+import numpy as np
 import plotly.figure_factory as ff  # type: ignore
 from bs4 import BeautifulSoup as BS  # type: ignore
 from bs4 import NavigableString
-from dataclasses import dataclass
 
 Edge = T.Tuple[int, int]
 EdgeList = T.List[Edge]
@@ -23,10 +26,14 @@ NodeList = T.List[Node]
 EdgeType = int
 EdgeTypeList = T.List[EdgeType]
 Slice = T.Tuple[int, int]
-NodeName = T.TypeVar("NodeName")
-EdgeName = T.TypeVar("EdgeName")
-NamedEdgesWithTypes = T.FrozenSet[T.Tuple[T.Tuple[NodeName, NodeName], EdgeName]]
-NamedImpNodes = T.FrozenSet[NodeName]
+NodeName = str
+EdgeName = str
+
+
+class GraphRepr(T.NamedTuple):
+    named_edges: T.Set[T.Tuple[T.Tuple[NodeName, NodeName], EdgeName]]
+    named_imp_nodes: T.Set[str]
+    graph_id: str
 
 
 class Graph:
@@ -34,86 +41,151 @@ class Graph:
 
     Attributes:
         lsedge: A list of tuples. `(n1,n2)` means there is an edge between 
-            nodeid2wordid[n1] and nodeid2wordid[n2].
+            lsglobal_id[n1] and lsglobal_id[n2].
         lsedge_type: A list of edge types.
-        lsimp_node: A list of "important nodes". `[n1]` means nodeid2wordid[n1] is an
+        lsimp_node: A list of "important nodes". `[n1]` means lsglobal_id[n1] is an
             important node.
-        nodeid2wordid: A mapping from the zero based node indices used in above to a
+        lsglobal_id: A mapping from the zero based node indices used in above to a
             global "vocabulary" of some kind.
     """
 
     __slots__ = (
+        "graph_id",
         "lsedge",
         "lsedge_type",
         "lsimp_node",
-        "nodeid2wordid",
+        "lsglobal_id",
     )
 
     def __init__(
         self,
+        graph_id: str,
         lsedge: EdgeList,
         lsedge_type: EdgeTypeList,
         lsimp_node: NodeList,
-        nodeid2wordid: T.Optional[T.List[int]],
+        lsglobal_id: T.Optional[T.List[int]],
     ) -> None:
 
+        self.graph_id = graph_id
         self.lsedge = lsedge
         self.lsedge_type = lsedge_type
         self.lsimp_node = lsimp_node
-        self.nodeid2wordid = nodeid2wordid
+        self.lsglobal_id = lsglobal_id
 
     def copy(
         self,
         *,
+        graph_id: T.Optional[str] = None,
         lsedge: T.Optional[EdgeList] = None,
         lsedge_type: T.Optional[EdgeTypeList] = None,
         lsimp_node: T.Optional[NodeList] = None,
-        nodeid2wordid: T.Optional[T.List[Node]] = None,
+        lsglobal_id: T.Optional[T.List[Node]] = None,
     ) -> Graph:
 
         graph_class = type(self)
         return graph_class(
+            graph_id=graph_id if graph_id is not None else self.graph_id,
             lsedge=lsedge if lsedge is not None else self.lsedge,
             lsedge_type=lsedge_type if lsedge_type is not None else self.lsedge_type,
             lsimp_node=lsimp_node if lsimp_node is not None else self.lsimp_node,
-            nodeid2wordid=nodeid2wordid
-            if nodeid2wordid is not None
-            else self.nodeid2wordid,
+            lsglobal_id=lsglobal_id if lsglobal_id is not None else self.lsglobal_id,
         )
 
     def __hash__(self) -> int:
         """Needed to use as a key in lru_cache."""
-        nodeid2wordid = self.nodeid2wordid
-        if nodeid2wordid is None:
-            nodeid2wordid = []
+        lsglobal_id = self.lsglobal_id
+        if lsglobal_id is None:
+            lsglobal_id = []
         to_hash: T.List[T.List[T.Any]] = [
+            [self.graph_id],  # It was the only non list thing
             self.lsedge,
             self.lsedge_type,
             self.lsimp_node,
-            nodeid2wordid,
+            lsglobal_id,
         ]
 
         return hash(tuple(tuple(ls) for ls in to_hash))
+
+    def __eq__(self, other: T.Any) -> bool:
+        if not isinstance(other, type(self)):
+            return False
+        return hash(self) == hash(other)
+
+    def __repr__(self) -> str:
+        # Skip naming nodes since the degree gets added in _named_edges_and_imp_nodes
+        # anyways. But do name the edges
+        return str(
+            self._named_edges_and_imp_nodes(lambda n: "", edge_namer=lambda e: str(e))
+        )
 
     def _named_edges_and_imp_nodes(
         self,
         node_namer: T.Callable[[int], NodeName],
         edge_namer: T.Callable[[int], EdgeName],
-    ) -> T.Tuple[NamedEdgesWithTypes[NodeName, EdgeName], NamedImpNodes[NodeName]]:
-        """"
+    ) -> GraphRepr:
+        """"Will (probably) fail to represent graphs where multiple nodes of the same
+        underlying object type are present in the same graph.
+
+        Args:
+            node_mamer: Must not return the same name for different global ids
+            edge_namer: Must not return the same name for different global ids
         
         Returns:
             named_edges_with_types:
             named_imp_nodes:
         """
-        assert self.nodeid2wordid
-        lsnode_named = list(map(node_namer, self.nodeid2wordid))
-        lsedge_named = [(lsnode_named[e1], lsnode_named[e2]) for e1, e2 in self.lsedge]
-        lsimp_node_named = frozenset(lsnode_named[n] for n in self.lsimp_node)
-        lsedge_type_named = list(map(edge_namer, self.lsedge_type))
-        lsedge_with_edge_type_named = frozenset(zip(lsedge_named, lsedge_type_named))
+        assert self.lsglobal_id
 
-        return lsedge_with_edge_type_named, lsimp_node_named
+        # Sort by degree to have some consistent way of assigning some "id"
+        # to nodes that doesn't vary across isomorphic graphs
+        edge_endpoints: T.List[int] = []
+        for edge in self.lsedge:
+            edge_endpoints.extend(edge)  # adding local ids
+
+        def degree(tup: T.Tuple[int, int]) -> int:
+            local_id, global_id = tup
+            return edge_endpoints.count(local_id)
+
+        lsglobal_id_degree = list(map(degree, enumerate(self.lsglobal_id)))
+        new_lslocal_id = [
+            pos  # Take the position from the original enuemrate
+            for pos, degree in sorted(
+                enumerate(lsglobal_id_degree), key=lambda tup: tup[1]  # Sort by degree
+            )
+        ]
+        # Sanity check: make sure new lslocal id is 0,1.2 ...  len(self.lsglobal_id) - 1
+        assert sorted(new_lslocal_id) == list(range(len(self.lsglobal_id)))
+
+        new_lsedge = [
+            (new_lslocal_id[n1], new_lslocal_id[n2]) for n1, n2 in self.lsedge
+        ]
+        new_lsimp_node = [new_lslocal_id[n] for n in self.lsimp_node]
+        new_lsedge_type = self.lsedge_type[:]  # a copy is probably not needed
+        new_lsglobal_id = [
+            global_id
+            for local_id, global_id in sorted(
+                enumerate(self.lsglobal_id),
+                key=lambda tup: new_lslocal_id[
+                    # prev_local_id, global_id = tup, sort by degree(which is new local id)
+                    tup[0]
+                ],
+            )
+        ]
+
+        lsnode_named = [
+            f"{local_id}: {node_namer(global_id)}"
+            for local_id, global_id in enumerate(new_lsglobal_id)
+        ]
+        lsedge_named = [(lsnode_named[e1], lsnode_named[e2]) for e1, e2 in new_lsedge]
+        lsimp_node_named = set(lsnode_named[n] for n in new_lsimp_node)
+        lsedge_type_named = list(map(edge_namer, new_lsedge_type))
+        lsedge_with_edge_type_named = set(zip(lsedge_named, lsedge_type_named))
+
+        return GraphRepr(
+            named_edges=lsedge_with_edge_type_named,
+            named_imp_nodes=lsimp_node_named,
+            graph_id=self.graph_id,
+        )
 
     def equal_to(
         self,
@@ -131,12 +203,21 @@ class Graph:
         """
 
         assert (
-            self.nodeid2wordid is not None and other.nodeid2wordid is not None
+            self.lsglobal_id is not None and other.lsglobal_id is not None
         ), "Need global node ids to determine graph equality"
 
         self_named = self._named_edges_and_imp_nodes(node_namer, edge_namer)
         other_named = other._named_edges_and_imp_nodes(node_namer, edge_namer)
         return self_named == other_named
+
+    def to_svg_file(
+        self,
+        file_path: Path,
+        node_namer: T.Callable[[int], str] = lambda i: str(i),
+        edge_namer: T.Callable[[int], str] = lambda i: str(i),
+    ) -> None:
+        with file_path.open("w") as f:
+            f.write(self.to_svg(node_namer, edge_namer))
 
     def to_svg(
         self,
@@ -159,12 +240,12 @@ class Graph:
             """Because of a PyDot bug, we need this."""
             return '"' + s.replace('"', '"') + '"'
 
-        assert self.nodeid2wordid is not None
+        assert self.lsglobal_id is not None
 
         # NetworkX format
         lsnode_id_and_nx_dict: T.List[T.Tuple[int, T.Dict[str, str]]] = [
             (node_id, {"label": quote(name)})
-            for node_id, name in enumerate(map(node_namer, self.nodeid2wordid))
+            for node_id, name in enumerate(map(node_namer, self.lsglobal_id))
         ]
 
         # Mark the "important nodes"
