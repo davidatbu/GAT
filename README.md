@@ -1,6 +1,6 @@
 # Using multi-head attention with graph neural networks
 
-This repo has code experimenting with using graph neural networks with multi head attention to do text processing. 
+This repo has code experimenting with using graph neural networks with multi head attention to do text tasks (like classification). 
 
 There are many helpers with reading data, tokenizing, ..etc, but the main Pytorch module in this repo has the following `.forward()` signature.
 
